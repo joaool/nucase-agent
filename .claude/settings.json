@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -Command \"[System.Media.SystemSounds]::Exclamation.Play()\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+

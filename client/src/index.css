@@ -1,0 +1,158 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens. Prefixed with --nc- (Nucase) so they stay distinct from the
+ * Tailwind theme keys below that reference them via var(...) — @theme inline
+ * substitutes that var() reference directly, so if the names matched it would
+ * self-reference and silently break. ThemeContext toggles data-theme="light"
+ * on <html>; every token below is redefined for that state, and because
+ * Tailwind utilities resolve through these same variables, they re-theme
+ * automatically with zero `dark:` variants anywhere in component code.
+ */
+:root {
+  --nc-bg-app: #0a0f1a;
+  --nc-bg-sidebar: #0a0e18;
+  --nc-bg-panel: #0d1320;
+  --nc-bg-elevated: #141b2b;
+  --nc-bg-elevated-hover: #1a2338;
+  --nc-border-subtle: #212b3d;
+  --nc-border-strong: #2c3750;
+
+  --nc-text-primary: #e8ecf3;
+  --nc-text-secondary: #9aa6bc;
+  --nc-text-muted: #64708a;
+
+  --nc-accent: #2dd4bf;
+  --nc-accent-strong: #14b8a6;
+  --nc-accent-soft: rgba(45, 212, 191, 0.14);
+  --nc-accent-contrast: #06251f;
+
+  --nc-danger: #f87171;
+  --nc-danger-soft: rgba(248, 113, 113, 0.12);
+
+  --nc-badge-bg: #3f2530;
+  --nc-badge-text: #f4a89c;
+  --nc-badge-border: rgba(244, 168, 156, 0.35);
+
+  --nc-bubble-user-bg: #232d42;
+  --nc-bubble-user-text: var(--nc-text-primary);
+
+  --nc-shadow-elevated: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --nc-radius-sm: 6px;
+  --nc-radius-md: 10px;
+  --nc-radius-lg: 14px;
+
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --nc-bg-app: #f3f5f9;
+  --nc-bg-sidebar: #ffffff;
+  --nc-bg-panel: #f7f8fb;
+  --nc-bg-elevated: #ffffff;
+  --nc-bg-elevated-hover: #eef1f6;
+  --nc-border-subtle: #e3e7ee;
+  --nc-border-strong: #d3d9e3;
+
+  --nc-text-primary: #131826;
+  --nc-text-secondary: #4b5568;
+  --nc-text-muted: #8792a6;
+
+  --nc-accent: #0d9488;
+  --nc-accent-strong: #0f766e;
+  --nc-accent-soft: rgba(13, 148, 136, 0.1);
+  --nc-accent-contrast: #ffffff;
+
+  --nc-danger: #dc2626;
+  --nc-danger-soft: rgba(220, 38, 38, 0.08);
+
+  --nc-badge-bg: #fde3dc;
+  --nc-badge-text: #b23a26;
+  --nc-badge-border: rgba(178, 58, 38, 0.25);
+
+  --nc-bubble-user-bg: #e7ebf3;
+  --nc-bubble-user-text: var(--nc-text-primary);
+
+  --nc-shadow-elevated: 0 12px 32px rgba(20, 25, 40, 0.1);
+  color-scheme: light;
+}
+
+/* Bridges the tokens above into Tailwind utility classes (bg-panel,
+ * text-secondary, border-subtle, rounded-md, shadow-elevated, ...). See the
+ * comment above :root for why the source variables are --nc-prefixed. */
+@theme inline {
+  --color-app: var(--nc-bg-app);
+  --color-sidebar: var(--nc-bg-sidebar);
+  --color-panel: var(--nc-bg-panel);
+  --color-elevated: var(--nc-bg-elevated);
+  --color-elevated-hover: var(--nc-bg-elevated-hover);
+  --color-subtle: var(--nc-border-subtle);
+  --color-strong: var(--nc-border-strong);
+
+  --color-primary: var(--nc-text-primary);
+  --color-secondary: var(--nc-text-secondary);
+  --color-muted: var(--nc-text-muted);
+
+  --color-accent: var(--nc-accent);
+  --color-accent-strong: var(--nc-accent-strong);
+  --color-accent-soft: var(--nc-accent-soft);
+  --color-accent-contrast: var(--nc-accent-contrast);
+
+  --color-danger: var(--nc-danger);
+  --color-danger-soft: var(--nc-danger-soft);
+
+  --color-badge: var(--nc-badge-bg);
+  --color-badge-text: var(--nc-badge-text);
+  --color-badge-border: var(--nc-badge-border);
+
+  --color-bubble: var(--nc-bubble-user-bg);
+  --color-bubble-text: var(--nc-bubble-user-text);
+
+  --radius-sm: var(--nc-radius-sm);
+  --radius-md: var(--nc-radius-md);
+  --radius-lg: var(--nc-radius-lg);
+
+  --shadow-elevated: var(--nc-shadow-elevated);
+}
+
+/* Global resets with no Tailwind utility equivalent. */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--nc-bg-app);
+  color: var(--nc-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--nc-border-strong);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
