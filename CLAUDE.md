@@ -23,6 +23,13 @@ Requires a running Postgres instance and `server/.env` / `client/.env` populated
 `OPENROUTER_API_KEY`). See README.md for full local setup (installing Postgres, creating the
 `nucase` database, etc.).
 
+> **Migration in progress.** This app is being migrated to a Railway + Vanna +
+> on-premise SQL Server architecture. See
+> `.claude/skills/railway-vanna-migration/SKILL.md` for current phase status,
+> locked-in decisions, and mandatory guardrails. The sections below describe
+> the app's **current, pre-migration** state — check the skill's status
+> checklist before assuming they're still accurate.
+
 ## Architecture
 
 Two npm workspaces, no shared package between them — the client talks to the server only over
