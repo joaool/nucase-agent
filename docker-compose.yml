@@ -1,0 +1,24 @@
+# Local dev only. Adds SQL Server 2025 alongside the existing Postgres setup
+# (still started separately per README.md — this file intentionally doesn't
+# touch that). Part of Phase 1 of the Railway + Vanna migration; see
+# .claude/skills/railway-vanna-migration/SKILL.md. Schema-only for now: the
+# app (server/src) does not talk to this yet.
+#
+# Usage:
+#   docker compose up -d
+#   npm run db:migrate:mssql
+services:
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2025-latest
+    container_name: nucase-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "NucaseDev!2025"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+
+volumes:
+  mssql-data:

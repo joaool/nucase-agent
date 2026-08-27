@@ -79,6 +79,24 @@ seeded demo user, and you should land on the chat page.
   placeholder — see the `// TODO` in `server/src/controllers/chat.controller.ts`
   for where to plug in the real agent logic.
 
+## Optional: SQL Server 2025 (Railway + Vanna migration, schema-only)
+
+This app is being migrated to a Railway + Vanna + on-premise SQL Server
+architecture — see `.claude/skills/railway-vanna-migration/SKILL.md` for
+status and details. Phase 1 adds a local SQL Server alongside Postgres,
+purely so `schema.mssql.sql` can be developed and tested; **the app doesn't
+use it yet** — `server/src` still talks to Postgres exclusively, and none of
+the steps above change.
+
+```
+docker compose up -d       # starts SQL Server 2025 on localhost:1433
+npm run db:migrate:mssql   # applies server/db/schema.mssql.sql (idempotent, safe to re-run)
+```
+
+No `.env` changes needed — `db:migrate:mssql` defaults to the credentials in
+`docker-compose.yml`. Set `MSSQL_CONNECTION_STRING` in `server/.env` only if
+you're pointing at a different SQL Server instance.
+
 ## Verification checklist
 
 1. `npm run dev`, open `http://localhost:5173` → redirected to `/login`.
