@@ -64,9 +64,8 @@ ALTER TABLE chart_of_accounts ADD COLUMN IF NOT EXISTS account_class TEXT;
 ALTER TABLE chart_of_accounts ADD COLUMN IF NOT EXISTS snc_class TEXT;
 ALTER TABLE chart_of_accounts ADD COLUMN IF NOT EXISTS parent_account TEXT;
 
--- Contracts. third_party_id and source_document are plain integers, not FKs
--- to third_parties/documents — those tables are still stubs, so these are
--- loose references (matching the reference data) until they're modeled too.
+-- Contracts. third_party_id and source_document are plain integers, not FKs —
+-- loose references (matching the reference data), not modeled further here.
 CREATE TABLE IF NOT EXISTS contracts (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id      UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -91,28 +90,13 @@ ALTER TABLE contracts ADD COLUMN IF NOT EXISTS monthly_amount NUMERIC(14, 2);
 ALTER TABLE contracts ADD COLUMN IF NOT EXISTS full_text TEXT;
 ALTER TABLE contracts ADD COLUMN IF NOT EXISTS source_document INTEGER;
 
--- Documents. entity_id is a loose integer reference (e.g. to a third party
--- or invoice), same pattern as contracts.third_party_id/source_document —
--- not an FK since the referenced tables aren't all modeled yet.
-CREATE TABLE IF NOT EXISTS documents (
-  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id     UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  document_type  TEXT,
-  file_name      TEXT,
-  entity_id      INTEGER,
-  "date"         DATE,
-  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
--- Table already existed pre-dating these columns in local dev DBs — add them
--- if missing so `npm run db:migrate` stays idempotent and re-runnable.
-ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_type TEXT;
-ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_name TEXT;
-ALTER TABLE documents ADD COLUMN IF NOT EXISTS entity_id INTEGER;
-ALTER TABLE documents ADD COLUMN IF NOT EXISTS "date" DATE;
-
--- Stub tables for the remaining Financial Data tabs. Columns are intentionally
--- minimal (id, company_id, created_at) until each schema is defined; the
--- generic /api/financial/:tableKey endpoint already works against them as-is.
+-- employees/invoices below are Postgres dev-DB leftovers, kept only because
+-- nothing currently drops them; the Financial Data tabs that used to point at
+-- Postgres stub tables (Documents, Journal Entries, Journal Lines, Payroll,
+-- Third Parties) were removed here when FINANCIAL_TABLES was repointed at the
+-- real per-tenant SQL Server tables (see
+-- .claude/skills/railway-vanna-migration/SKILL.md) — those 5 tabs no longer
+-- exist, so their stub tables were dropped from this file too.
 CREATE TABLE IF NOT EXISTS employees (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id            UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -130,30 +114,6 @@ ALTER TABLE employees ADD COLUMN IF NOT EXISTS gross_monthly_salary NUMERIC(14, 
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS active BOOLEAN;
 
 CREATE TABLE IF NOT EXISTS invoices (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS journal_entries (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS journal_lines (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS payroll (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS third_parties (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -181,7 +141,6 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_company ON bank_transactions(company_id);
 CREATE INDEX IF NOT EXISTS idx_chart_of_accounts_company ON chart_of_accounts(company_id);
 CREATE INDEX IF NOT EXISTS idx_contracts_company ON contracts(company_id);
-CREATE INDEX IF NOT EXISTS idx_documents_company ON documents(company_id);
 CREATE INDEX IF NOT EXISTS idx_employees_company ON employees(company_id);
 CREATE INDEX IF NOT EXISTS idx_chat_threads_user_company ON chat_threads(user_id, company_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id);

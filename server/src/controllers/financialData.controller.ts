@@ -1,3 +1,11 @@
+// TODO(migration): FINANCIAL_TABLES' `table` values are now SQL Server table
+// names (per .claude/skills/railway-vanna-migration/SKILL.md), but the query
+// below still runs via `pool` (Postgres, `pg`) against the shared dev DB —
+// these tables don't exist there, so every tab except the ones that happen
+// to share a name with an old Postgres stub will error or return nothing.
+// This is expected and intentional until Phase 2 (mssql driver swap) and
+// Phase 3 (per-tenant connection resolver) land; do not "fix" this file to
+// make it work again without going through those phases.
 import type { Request, Response } from "express";
 import { pool } from "../config/db.js";
 import { FINANCIAL_TABLES, FINANCIAL_TAB_ORDER } from "../config/financialTables.js";

@@ -26,7 +26,13 @@ Production continues to deploy from `main`, untouched, until this branch is
 merged.
 
 - [x] Phase 0 — Decision made: adopting Vanna (not extending the tool-calling agent)
-- [ ] Phase 1 — SQL Server running locally (Docker), `schema.mssql.sql` ported, Postgres still primary/untouched
+- [ ] Phase 1 (started) — `docker-compose.yml` (SQL Server 2025) and
+      `server/db/schema.mssql.sql` added, plus `npm run db:migrate:mssql`
+      (`server/db/migrate.mssql.ts`). Postgres and `server/src` untouched.
+      **Not yet verified against a running container** — Docker wasn't
+      available in the environment this was built in; typechecks clean but
+      `docker compose up -d && npm run db:migrate:mssql` still needs a real
+      run to confirm the schema actually applies.
 - [ ] Phase 2 — DB driver swapped behind the data-access layer (`mssql`/`tedious`), dialect adapter for pagination/identifiers
 - [ ] Phase 3 — Per-tenant connection routing built (Company ID → connection string resolver)
 - [ ] Phase 4 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
@@ -76,6 +82,30 @@ merged.
 6. **Staying on Express, not migrating to NestJS**, unless a separate
    explicit decision changes this. The architecture diagram's "Node.js /
    Nest.js" was presented as either/or, not a requirement.
+7. **Financial Data tabs cut from 10 to 7, repointed at the real
+   PRIEXPRESS-derived per-tenant SQL Server table names.** `FINANCIAL_TABLES`
+   in `server/src/config/financialTables.ts` now maps:
+
+   | Tab | Table |
+   |---|---|
+   | Bank Transactions | `dbo.MovimentosBancos` |
+   | Chart of Accounts | `dbo.PlanoContas` |
+   | Contracts | `dbo.FAC_CabecContratos` |
+   | Employees | `dbo.Funcionarios` |
+   | Invoices | `dbo.CabecDoc` |
+   | Clients | `dbo.Clientes` |
+   | Suppliers | `dbo.Fornecedores` |
+
+   Documents, Journal Entries, Journal Lines, Payroll, and Third Parties were
+   dropped — no PRIEXPRESS-derived equivalent is in scope. Their Postgres
+   stub tables were also removed from `server/db/schema.sql`.
+
+   **Config is done; execution is not.** `financialData.controller.ts` still
+   queries Postgres via `pg` and does not resolve a per-tenant SQL Server
+   connection — every tab is expected to error or return nothing until
+   Phase 2 (driver swap) and Phase 3 (connection resolver) land. This was a
+   deliberate config-only change, not an oversight; don't "fix" the
+   controller without going through those phases.
 
 ---
 
@@ -107,9 +137,9 @@ requirements, not suggestions:
 | `client/` | Unchanged, unless API response shapes change |
 | `server/src/middleware/requireAuth.ts` | Unchanged |
 | `server/src/utils/companyAccess.ts` | Superseded by the tenant connection resolver (Phase 3) — **do not delete until the resolver is live and tested** |
-| `server/db/schema.sql` | Stays as-is (dev/legacy Postgres) |
-| `server/db/schema.mssql.sql` | New — T-SQL port of the schema (Phase 1) |
-| `server/src/config/financialTables.ts` | Pattern reused; add a dialect adapter for T-SQL pagination (`OFFSET`/`FETCH`) and identifiers (`[brackets]`) |
+| `server/db/schema.sql` | Dev/legacy Postgres — no longer fully "stays as-is": the 5 stub tables for removed tabs (Documents, Journal Entries, Journal Lines, Payroll, Third Parties) were dropped from this file (decision 7). `employees`/`invoices` remain as unused leftovers. |
+| `server/db/schema.mssql.sql` | T-SQL port of the *old* 10-table Postgres schema (Phase 1) — **now stale**: still has Documents/Journal Entries/Journal Lines/Payroll/Third Parties and the old table names, not the real PRIEXPRESS names from decision 7. Needs reconciling once real per-tenant column shapes are known — not attempted yet since only table names, not columns, have been provided so far. |
+| `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7); still needs a dialect adapter for T-SQL pagination (`OFFSET`/`FETCH`) and identifiers (`[brackets]`) once Phase 2 lands |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 3) |
 | `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 4 / 5) |
