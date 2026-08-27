@@ -1,325 +1,988 @@
--- Nucase Agent schema — SQL Server (T-SQL) port of schema.sql
+-- Nucase Agent schema — SQL Server (T-SQL), the real PRIEXPRESS-derived
+-- per-tenant schema
 --
 -- Phase 1 of the Railway + Vanna migration (see
--- .claude/skills/railway-vanna-migration/SKILL.md). This is a *schema-only*
--- port: same tables, same columns, same shapes as schema.sql, translated to
--- T-SQL syntax. It is not wired into the app — server/src still talks to
--- Postgres exclusively. Run via `npm run db:migrate:mssql`
--- (server/db/migrate.mssql.ts just executes this file batch by batch).
+-- .claude/skills/railway-vanna-migration/SKILL.md, decision 7). Run via
+-- `npm run db:migrate:mssql` (server/db/migrate.mssql.ts executes this file
+-- batch by batch, split on `GO`). This is a *schema-only* file: none of it
+-- is wired into the app yet — server/src still talks to Postgres.
 --
--- Dialect notes (Postgres -> T-SQL):
---   UUID PRIMARY KEY DEFAULT gen_random_uuid()  -> UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID()
---   SERIAL PRIMARY KEY                          -> INT IDENTITY(1,1) PRIMARY KEY
---   TEXT                                        -> NVARCHAR(MAX) (except `users.email`, which
---                                                   needs a bounded NVARCHAR(320) because it's
---                                                   UNIQUE — SQL Server can't put NVARCHAR(MAX)
---                                                   in an index/unique-constraint key)
---   TIMESTAMPTZ NOT NULL DEFAULT now()          -> DATETIME2 NOT NULL DEFAULT GETDATE()
---   BOOLEAN                                     -> BIT
---   INTEGER                                     -> INT
---   NUMERIC(14, 2)                              -> unchanged, T-SQL supports it natively
---   DATE                                        -> unchanged, T-SQL supports it natively
---   CREATE EXTENSION pgcrypto                   -> not needed; NEWID() is built in
+-- Source: the 7 CREATE TABLE statements below are extracted verbatim from
+-- a real PRIEXPRESS schema dump (`C:\Primavera tests\priexpress_schema.sql`,
+-- generated 26/08/2026), wrapped in an idempotency guard — nothing about
+-- column names, types, lengths, nullability, or primary keys was invented
+-- or altered. This replaces an earlier version of this file that was a
+-- straight T-SQL port of the app's old, simplified 10-table Postgres model
+-- (fabricated columns, made-up names) — that version never matched reality;
+-- this one does.
 --
--- Idempotency: Postgres relies on `CREATE TABLE IF NOT EXISTS` and
--- `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, which T-SQL has no direct
--- equivalent for. Every statement below is wrapped in an OBJECT_ID/COL_LENGTH
--- guard instead, so this file is equally safe to re-run. Batches are
--- separated by `GO` because conditional DDL blocks are clearer (and some
--- SQL Server tooling requires it) as separate batches — server/db/migrate.mssql.ts
--- splits on `GO` before executing.
+-- Deliberately NOT included: `users`, `companies`, `user_companies`,
+-- `chat_threads`, `chat_messages`. None of the 7 real tables below carry a
+-- tenant/company column anywhere — confirmed by grepping the full dump —
+-- which lines up exactly with decision 4 in the migration skill: tenant
+-- isolation here is per-*database*, not per-row. A whole SQL Server
+-- database is one tenant. Auth, the company registry, and chat history
+-- live in the Railway metadata Postgres (decision 5) — they have no
+-- business being duplicated into every tenant's own SQL Server, so they
+-- aren't here.
+--
+-- Primary keys are the real business keys PRIEXPRESS uses, not the
+-- UUID-per-row pattern schema.sql uses: composite (Ano, Conta) for
+-- PlanoContas, natural string codes for Clientes/Fornecedores/Funcionarios/
+-- FAC_CabecContratos, and a `uniqueidentifier` `Id` column (not a
+-- surrogate we added) for MovimentosBancos/CabecDoc. None of that maps
+-- cleanly onto the app's current `ORDER BY created_at, id` /
+-- `company_id = $1` query shape in financialData.controller.ts — that's
+-- real Phase 2/3 work (dialect + connection-resolver adapter), not
+-- something to paper over here.
 
-IF OBJECT_ID('dbo.users', 'U') IS NULL
+-- Bank Transactions: verbatim from priexpress_schema.sql (dbo.MovimentosBancos), wrapped for idempotency.
+IF OBJECT_ID('dbo.MovimentosBancos', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.users (
-    id            UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    email         NVARCHAR(320) NOT NULL UNIQUE,
-    name          NVARCHAR(MAX) NOT NULL,
-    password_hash NVARCHAR(MAX) NOT NULL,
-    avatar_url    NVARCHAR(MAX) NULL,
-    created_at    DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[MovimentosBancos](
+  	[Conta] [nvarchar](5) NULL,
+  	[Rubrica] [nvarchar](35) NULL,
+  	[Movim] [nvarchar](5) NULL,
+  	[Valor] [float] NULL,
+  	[Entidade] [nvarchar](15) NULL,
+  	[DtMov] [datetime] NULL,
+  	[DtValor] [datetime] NULL,
+  	[DtRecon] [datetime] NULL,
+  	[SerieCheques] [nvarchar](15) NULL,
+  	[Obsv] [nvarchar](100) NULL,
+  	[Estado] [smallint] NULL,
+  	[TipoMov] [nvarchar](1) NULL,
+  	[BalcaoCheque] [nvarchar](35) NULL,
+  	[Emitido] [smallint] NULL,
+  	[Juro] [float] NULL,
+  	[Modulo] [nvarchar](1) NULL,
+  	[TipoEntidade] [nvarchar](1) NULL,
+  	[Numero] [nvarchar](15) NULL,
+  	[Retencao] [float] NULL,
+  	[FilialOriginal] [nvarchar](3) NULL,
+  	[SerieOriginal] [nvarchar](5) NOT NULL,
+  	[TipoDocOriginal] [nvarchar](5) NULL,
+  	[NumDocOriginal] [int] NULL,
+  	[Hora] [datetime] NULL,
+  	[Utilizador] [nvarchar](20) NULL,
+  	[Posto] [nvarchar](3) NULL,
+  	[Descricao] [nvarchar](50) NULL,
+  	[ComissaoMB] [float] NULL,
+  	[VersaoUltAct] [timestamp] NULL,
+  	[OutroMov] [bit] NULL,
+  	[IdExportacaoPS2] [int] NULL,
+  	[Id] [uniqueidentifier] NOT NULL,
+  	[IdMovimentosBancos] [uniqueidentifier] NULL,
+  	[IdReconciliacoes] [uniqueidentifier] NULL,
+  	[IdTalaoDeposito] [uniqueidentifier] NULL,
+  	[AnoCBL] [smallint] NULL,
+  	[IdDiarioCaixa] [uniqueidentifier] NULL,
+  	[IdTransferencia] [uniqueidentifier] NULL,
+  	[IdChequeOrigem] [uniqueidentifier] NULL,
+  	[ObraID] [uniqueidentifier] NULL,
+  	[IdLinhasExtractoBancario] [uniqueidentifier] NULL,
+  	[ReconciliadoPorExtracto] [bit] NOT NULL,
+  	[ClasseID] [int] NULL,
+  	[SubEmpID] [int] NULL,
+  	[CategoriaID] [int] NULL,
+  	[CambioMBase] [float] NOT NULL,
+  	[CambioMAlt] [float] NOT NULL,
+  	[ResultadoAgrupamento] [bit] NULL,
+  	[MovimentoDividido] [bit] NULL,
+  	[ContaCBL] [nvarchar](20) NULL,
+  	[CCustoCBL] [nvarchar](15) NULL,
+  	[AnaliticaCBL] [nvarchar](20) NULL,
+  	[FunctionalCBL] [nvarchar](15) NULL,
+  	[IdTEServicosBancarios] [uniqueidentifier] NULL,
+  	[NumLinhaPS2] [int] NULL,
+  	[TipoLancamentoOrigem] [varchar](3) NULL,
+  	[CustoBancario] [bit] NOT NULL,
+  	[CobrarCusto] [bit] NOT NULL,
+  	[Selo] [nvarchar](15) NULL,
+  	[Iva] [nvarchar](2) NULL,
+  	[ValorPendente] [float] NULL,
+  	[ValorDebitado] [float] NULL,
+  	[DataIntroducao] [datetime] NULL,
+  	[WBSItem] [nvarchar](100) NULL,
+  	[NIBExportaPS2] [nvarchar](34) NULL,
+  	[IdMovCBL] [uniqueidentifier] NULL,
+   CONSTRAINT [MovimentosBancos01] PRIMARY KEY CLUSTERED 
+  (
+  	[Id] ASC
+  )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY]
 END
 GO
 
-IF OBJECT_ID('dbo.companies', 'U') IS NULL
+-- Chart of Accounts: verbatim from priexpress_schema.sql (dbo.PlanoContas), wrapped for idempotency.
+IF OBJECT_ID('dbo.PlanoContas', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.companies (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    name       NVARCHAR(MAX) NOT NULL,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[PlanoContas](
+  	[Conta] [nvarchar](20) NOT NULL,
+  	[Descricao] [nvarchar](100) NULL,
+  	[ClasseIva] [nvarchar](10) NULL,
+  	[ClasseSelo] [nvarchar](15) NULL,
+  	[TipoConta] [nvarchar](1) NULL,
+  	[ContaDB] [nvarchar](20) NULL,
+  	[ContaDBRep] [nvarchar](3) NULL,
+  	[ContaCR] [nvarchar](20) NULL,
+  	[ContaCRRep] [nvarchar](3) NULL,
+  	[ContaRep] [nvarchar](15) NULL,
+  	[ContaRepFunc] [nvarchar](15) NULL,
+  	[ChvRep] [nvarchar](3) NULL,
+  	[ChvRepFunc] [nvarchar](3) NULL,
+  	[CustoFixo] [real] NULL,
+  	[PedeOrcam] [bit] NOT NULL,
+  	[ContaCorrente] [bit] NULL,
+  	[Retencao] [bit] NULL,
+  	[Natureza] [nvarchar](1) NULL,
+  	[Categoria] [nvarchar](2) NULL,
+  	[TrataIMO] [bit] NULL,
+  	[CorrecaoMonetaria] [bit] NULL,
+  	[MoedaValores] [nvarchar](3) NULL,
+  	[Ano] [smallint] NOT NULL,
+  	[CAE] [nvarchar](15) NULL,
+  	[Coeficiente] [float] NULL,
+  	[Diario] [nvarchar](5) NULL,
+  	[TaxaRetencao] [float] NULL,
+  	[Linha] [smallint] NULL,
+  	[SujeitoRetencao] [bit] NOT NULL,
+  	[DesagregaNatureza] [bit] NOT NULL,
+  	[NaturezaConta] [varchar](1) NULL,
+  	[ContaDifCFavoraveis] [nvarchar](20) NULL,
+  	[ContaDifCDesfavoraveis] [nvarchar](20) NULL,
+  	[ContaDifCContrapartida] [nvarchar](20) NULL,
+  	[IntegraCCT] [bit] NOT NULL,
+  	[TipoContaCCT] [nvarchar](3) NULL,
+  	[EstadoContaCCT] [nvarchar](4) NULL,
+  	[TipoEntidade] [nvarchar](1) NULL,
+  	[Entidade] [nvarchar](12) NULL,
+  	[Inactivo] [bit] NULL,
+  	[Grupo] [nvarchar](10) NULL,
+  	[ContaAjusteNatureza] [nvarchar](20) NULL,
+  	[ContaAjusteMedioPrazo] [nvarchar](20) NULL,
+  	[ContaAjusteLongoPrazo] [nvarchar](20) NULL,
+  	[ContaContrapartidaAjustes] [nvarchar](20) NULL,
+  	[ItemTesouraria] [nvarchar](35) NULL,
+  	[PodeAlterarItem] [bit] NULL,
+  	[ContaAlternativa] [nvarchar](20) NULL,
+  	[DescricaoAlternativa] [nvarchar](50) NULL,
+  	[PodeAlterarEntidade] [bit] NOT NULL,
+  	[PodeAlterarCCT] [bit] NOT NULL,
+  	[Projecto] [nvarchar](40) NULL,
+  	[WBSItem] [nvarchar](100) NULL,
+  	[DataCriacao] [datetime] NULL,
+  	[Actividade] [nvarchar](15) NULL,
+  	[DescricaoActividade] [nvarchar](50) NULL,
+  	[Unidade] [nvarchar](5) NULL,
+  	[TipoCalculo] [varchar](1) NULL,
+  	[ContaDebito] [nvarchar](20) NULL,
+  	[EntidadeParceira] [nvarchar](5) NULL,
+  	[ReflexaoOrc] [bit] NULL,
+  	[AquisicaoTituloOneroso] [bit] NULL,
+  	[TipoDivida] [smallint] NULL,
+  	[ContaCentral] [nvarchar](10) NULL,
+  	[ContaEstorno] [nvarchar](20) NULL,
+  	[MotivoTributacao] [varchar](100) NULL,
+  	[ExcluiS3CP] [bit] NULL,
+  	[Exigibilidade] [nvarchar](6) NULL,
+  	[NaturezaOperacao] [nvarchar](6) NULL,
+  	[GrupoEndividamento] [nvarchar](6) NULL,
+  	[TipoImo] [nvarchar](15) NULL,
+  	[TrataEquipamentos] [bit] NOT NULL,
+   CONSTRAINT [PlanoContas01] PRIMARY KEY CLUSTERED 
+  (
+  	[Ano] ASC,
+  	[Conta] ASC
+  )WITH (PAD_INDEX = ON, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY]
 END
 GO
 
-IF OBJECT_ID('dbo.user_companies', 'U') IS NULL
+-- Contracts: verbatim from priexpress_schema.sql (dbo.FAC_CabecContratos), wrapped for idempotency.
+IF OBJECT_ID('dbo.FAC_CabecContratos', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.user_companies (
-    user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.users(id) ON DELETE CASCADE,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    PRIMARY KEY (user_id, company_id)
-  );
+  CREATE TABLE [dbo].[FAC_CabecContratos](
+  	[Contrato] [nvarchar](20) NOT NULL,
+  	[Descricao] [nvarchar](100) NULL,
+  	[Data] [datetime] NULL,
+  	[Validade] [datetime] NULL,
+  	[Referencia] [nvarchar](100) NULL,
+  	[Limitado] [bit] NULL,
+  	[ValorLimite] [float] NULL,
+  	[Moeda] [nvarchar](3) NULL,
+  	[EntidadeFactor] [nvarchar](12) NULL,
+  	[ContaBancaria] [nvarchar](5) NULL,
+  	[ContratoComRecurso] [bit] NULL,
+  	[ContratoNacional] [bit] NULL,
+  	[ComissaoCobranca] [float] NULL,
+  	[ModoPagamento] [nvarchar](5) NULL,
+  	[PeriodicidadeJuros] [smallint] NULL,
+  	[ContaCredor] [nvarchar](20) NULL,
+  	[ContaFinanciamentos] [nvarchar](20) NULL,
+  	[ContaBanco] [nvarchar](20) NULL,
+  	[CentroCusto] [nvarchar](15) NULL,
+  	[Funcional] [nvarchar](15) NULL,
+  	[ProjectoID] [uniqueidentifier] NULL,
+  	[AnaliticaNatureza] [nvarchar](20) NULL,
+  	[AnaliticaNaturezaInv] [nvarchar](20) NULL,
+  	[ComissaoFixa1] [float] NULL,
+  	[ComissaoFixa2] [float] NULL,
+  	[UltimaTaxaJuro] [float] NULL,
+  	[DataUltimaTaxaJuro] [datetime] NULL,
+  	[WBSItem] [nvarchar](100) NULL,
+  	[Observacoes] [ntext] NULL,
+  	[TxJuroRefAnual] [smallint] NULL,
+  	[TipoDocCessao] [varchar](5) NULL,
+  	[SerieCessao] [varchar](5) NULL,
+  	[TipoDocAdiantamento] [varchar](5) NULL,
+  	[SerieAdiantamento] [varchar](5) NULL,
+  	[TipoDocCustoBancario] [varchar](5) NULL,
+  	[SerieCustoBancario] [varchar](5) NULL,
+  	[TipoDocRegularizacao] [varchar](5) NULL,
+  	[SerieRegularizacao] [varchar](5) NULL,
+  	[MapaMinuta] [varchar](8) NULL,
+  	[NumCopiasMinuta] [int] NOT NULL,
+  	[PrevisualizaMinuta] [bit] NOT NULL,
+  	[EnviaMinutaEmail] [bit] NOT NULL,
+  	[TipoContactoEntidadeFactor] [nvarchar](15) NULL,
+  	[MapaCartaCedencia] [varchar](8) NULL,
+  	[NumCopiasCartaCedencia] [int] NOT NULL,
+  	[PrevisualizaCartaCedencia] [bit] NOT NULL,
+  	[EnviaCartaCedenciaEmail] [bit] NOT NULL,
+  	[Estado] [tinyint] NOT NULL,
+   CONSTRAINT [FAC_CabecContratos_PK] PRIMARY KEY CLUSTERED 
+  (
+  	[Contrato] ASC
+  )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
 GO
 
--- Fully modeled: the one table the reference screenshots show real data for.
-IF OBJECT_ID('dbo.bank_transactions', 'U') IS NULL
+-- Employees: verbatim from priexpress_schema.sql (dbo.Funcionarios), wrapped for idempotency.
+IF OBJECT_ID('dbo.Funcionarios', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.bank_transactions (
-    id                     INT IDENTITY(1,1) PRIMARY KEY,
-    company_id             UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    transaction_date       DATE NOT NULL,
-    movement_date          DATE NULL,
-    value_date             DATE NULL,
-    description            NVARCHAR(MAX) NULL,
-    amount                 NUMERIC(14, 2) NOT NULL,
-    counterparty_iban      NVARCHAR(MAX) NULL,
-    matched_journal_entry  NVARCHAR(MAX) NULL,
-    operation_type         NVARCHAR(MAX) NULL,
-    source_document        NVARCHAR(MAX) NULL,
-    balance                NUMERIC(14, 2) NULL,
-    created_at             DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[Funcionarios](
+  	[Codigo] [nvarchar](10) NOT NULL,
+  	[Nome] [varchar](80) NULL,
+  	[Localidade] [varchar](80) NULL,
+  	[CodPostal1] [nvarchar](15) NULL,
+  	[CodPostal2] [nvarchar](35) NULL,
+  	[Naturalidade] [nvarchar](35) NULL,
+  	[Distrito] [varchar](2) NULL,
+  	[Nacionalidade] [nvarchar](3) NULL,
+  	[Telefone] [nvarchar](15) NULL,
+  	[EstadoCivil] [nvarchar](3) NULL,
+  	[Sexo] [nvarchar](1) NULL,
+  	[DataNascimento] [datetime] NULL,
+  	[DataAdmissao] [datetime] NULL,
+  	[DataReadmissao] [datetime] NULL,
+  	[DataFimContrato] [datetime] NULL,
+  	[Categoria] [nvarchar](10) NULL,
+  	[Profissao] [nvarchar](12) NULL,
+  	[Qualificacao] [nvarchar](3) NULL,
+  	[DataQualif] [datetime] NULL,
+  	[Habilitacao] [nvarchar](3) NULL,
+  	[TipoContrato] [int] NULL,
+  	[DataDemissao] [datetime] NULL,
+  	[DataPromocao] [datetime] NULL,
+  	[MotivoPromocao] [nvarchar](3) NULL,
+  	[HorasSemana] [real] NULL,
+  	[CodEstabelecimento] [nvarchar](3) NULL,
+  	[Situacao] [nvarchar](3) NULL,
+  	[SituacaoQP] [nvarchar](10) NULL,
+  	[NumBI] [nvarchar](20) NULL,
+  	[LocalEmBi] [nvarchar](20) NULL,
+  	[DataEmBi] [datetime] NULL,
+  	[CartaConducao] [nvarchar](15) NULL,
+  	[Vencimento] [float] NULL,
+  	[DataUltAumento] [datetime] NULL,
+  	[MotivoAumento] [nvarchar](3) NULL,
+  	[Notas] [ntext] NULL,
+  	[NumContr] [nvarchar](20) NULL,
+  	[CodRepFinancas] [nvarchar](5) NULL,
+  	[CodIRS] [varchar](2) NULL,
+  	[TotalDependentes] [smallint] NULL,
+  	[TotalDepDeficientes] [smallint] NULL,
+  	[ConjugeDef] [bit] NOT NULL,
+  	[IRSFixo] [real] NULL,
+  	[NomeConjuge] [nvarchar](50) NULL,
+  	[CodSegSocial] [nvarchar](3) NULL,
+  	[NumBeneficiario] [nvarchar](15) NULL,
+  	[CodSindicato] [nvarchar](3) NULL,
+  	[NumSindicato] [nvarchar](15) NULL,
+  	[TipoProcessamento] [smallint] NULL,
+  	[DataUltProcessamento] [datetime] NULL,
+  	[DataSubsFerias] [datetime] NULL,
+  	[MesSubsFerias] [smallint] NULL,
+  	[DataSubsNatal] [datetime] NULL,
+  	[TurnosTaxa] [smallint] NULL,
+  	[TurnosDia] [smallint] NULL,
+  	[SubsAlim1] [smallint] NULL,
+  	[SubsAlim2] [smallint] NULL,
+  	[ValorSubsAlim] [float] NULL,
+  	[ValorSubsEsp] [float] NULL,
+  	[DiasSubsNatal] [real] NULL,
+  	[DiasSubsFerias] [real] NULL,
+  	[SalHora] [real] NULL,
+  	[HoraEntradaM] [real] NULL,
+  	[HoraSaidaM] [real] NULL,
+  	[HoraEntradaT] [real] NULL,
+  	[HoraSaidaT] [real] NULL,
+  	[Foto] [nvarchar](50) NULL,
+  	[DataInspMedica] [datetime] NULL,
+  	[DescricaoInspMedica] [nvarchar](35) NULL,
+  	[CodBancoEmpr] [nvarchar](3) NULL,
+  	[Morada] [varchar](80) NULL,
+  	[TipoMoeda] [smallint] NULL,
+  	[Email] [nvarchar](512) NULL,
+  	[Periodo] [nvarchar](3) NULL,
+  	[CodDepartamento] [nvarchar](10) NULL,
+  	[NumPeriodoProcessado] [smallint] NULL,
+  	[Instrumento] [nvarchar](3) NULL,
+  	[SubsNatalProcessado] [bit] NOT NULL,
+  	[VencimentoMensal] [float] NULL,
+  	[DiuturnidadeMensal] [float] NULL,
+  	[Diuturnidades] [float] NULL,
+  	[NumHorasSemInstrumentos] [bit] NOT NULL,
+  	[PertenceOrgaosSoc] [bit] NOT NULL,
+  	[DataProximaDiuturnidade] [datetime] NULL,
+  	[Telemovel] [nvarchar](15) NULL,
+  	[LimiteContribuicoesSegSocial] [float] NULL,
+  	[CGA] [nvarchar](3) NULL,
+  	[NumCGA] [nvarchar](10) NULL,
+  	[NomeCGA] [nvarchar](50) NULL,
+  	[RegTmpPercAcresCGA] [real] NULL,
+  	[NumDiuturnidadesCGA] [int] NULL,
+  	[NivelRemCGA] [nvarchar](3) NULL,
+  	[RegTmpSituacaoCGA] [nvarchar](3) NULL,
+  	[RegTmpNumHorasCGA] [real] NULL,
+  	[UltimaProgressao] [datetime] NULL,
+  	[DiasSubsNatalJaPagos] [real] NULL,
+  	[TipoPessoal] [nvarchar](3) NULL,
+  	[UltimoAnoProcessado] [smallint] NOT NULL,
+  	[DomicilioFiscal] [smallint] NOT NULL,
+  	[Extensao] [nvarchar](15) NULL,
+  	[CodSituacaoQP] [smallint] NOT NULL,
+  	[NomeAbreviado] [nvarchar](25) NULL,
+  	[Contrato] [nvarchar](3) NULL,
+  	[DataAvisoPrevio] [datetime] NULL,
+  	[PeriodoExp] [int] NULL,
+  	[MotivoSaida] [nvarchar](3) NULL,
+  	[DataValidadeCarta] [datetime] NULL,
+  	[DataValidadeBI] [datetime] NULL,
+  	[Concelho] [varchar](4) NULL,
+  	[Freguesia] [varchar](2) NULL,
+  	[DataIniProfissao] [datetime] NULL,
+  	[DataHabilitacao] [datetime] NULL,
+  	[CargoPrincipal] [nvarchar](5) NULL,
+  	[RegimeTrab] [varchar](3) NULL,
+  	[Altura] [float] NULL,
+  	[GrupoSanguineo] [varchar](10) NULL,
+  	[DeficienciasFisicas] [text] NULL,
+  	[OutrasDadosFisicos] [text] NULL,
+  	[DeficienciasCronicas] [text] NULL,
+  	[DoencasHereditarias] [text] NULL,
+  	[Cirurgias] [text] NULL,
+  	[NomeDistrito] [varchar](35) NULL,
+  	[NomeConcelho] [varchar](35) NULL,
+  	[IdGDOC] [uniqueidentifier] NULL,
+  	[NomeFreguesia] [varchar](50) NULL,
+  	[VencimentoLiquidoEstimado] [money] NULL,
+  	[Moeda] [nvarchar](3) NOT NULL,
+  	[EpigrafeAT] [varchar](6) NULL,
+  	[GrupoCotizacao] [varchar](2) NULL,
+  	[Bonificacao] [varchar](3) NULL,
+  	[IniciaisNomeSegSocial] [varchar](5) NULL,
+  	[PercIncapacidade] [real] NULL,
+  	[MobilidadeReduzida] [bit] NULL,
+  	[ReducaoIrregularidades] [float] NULL,
+  	[GastosDedutiveis] [float] NULL,
+  	[PensaoConjuge] [float] NULL,
+  	[PensaoFilhos] [float] NULL,
+  	[MobilidadeGeografica] [bit] NULL,
+  	[ProlongacaoActLaboral] [bit] NULL,
+  	[VencimentoDiario] [float] NULL,
+  	[TipoCalculoVencimento] [smallint] NULL,
+  	[VencimentoConjSupLimite] [bit] NULL,
+  	[NumPassaporte] [varchar](20) NULL,
+  	[LocalEmPassaporte] [varchar](20) NULL,
+  	[DataEmPassaporte] [datetime] NULL,
+  	[DataValidadePassaporte] [datetime] NULL,
+  	[NumIE] [varchar](20) NULL,
+  	[LocalEmIE] [varchar](20) NULL,
+  	[DataEmIE] [datetime] NULL,
+  	[DataValidadeIE] [datetime] NULL,
+  	[CodSeguro] [uniqueidentifier] NULL,
+  	[DataInicioBonificacao] [datetime] NULL,
+  	[DataFimBonificacao] [datetime] NULL,
+  	[TipoRendimento] [nvarchar](5) NULL,
+  	[GrupoTraco] [varchar](4) NULL,
+  	[MinPessoalFamiliar] [float] NOT NULL,
+  	[Regime] [smallint] NOT NULL,
+  	[BaseCotizacao] [decimal](11, 2) NULL,
+  	[CustoPadrao] [decimal](16, 5) NOT NULL,
+  	[UtilizadoCCOP] [bit] NOT NULL,
+  	[RecursoCCOP] [int] NULL,
+  	[Isento] [bit] NOT NULL,
+  	[PercVencParaSubsFerias] [nvarchar](200) NULL,
+  	[PercVencParaSubsNatal] [nvarchar](200) NULL,
+  	[EmprestimoBancario] [bit] NULL,
+  	[EmprestimoBancarioAntesRegul] [bit] NULL,
+  	[ValorAbateAntesRegul] [float] NOT NULL,
+  	[RetribAnuaisIniciais] [float] NOT NULL,
+  	[MotivoAdmissao] [nvarchar](3) NULL,
+  	[PrimeiroNome] [nvarchar](80) NULL,
+  	[PrimeiroApelido] [nvarchar](60) NULL,
+  	[SegundoApelido] [nvarchar](60) NULL,
+  	[ContribuinteNaoResidente] [nvarchar](20) NULL,
+  	[AplicabilidadeIRCT] [varchar](10) NULL,
+  	[CategoriaEscalao] [int] NULL,
+  	[MesSubsNatal] [smallint] NULL,
+  	[FormaPagSN] [nvarchar](10) NULL,
+  	[FormaPagSF] [nvarchar](10) NULL,
+  	[ProcDiasAnterioresSN] [bit] NOT NULL,
+  	[ProcDiasAnterioresSF] [bit] NOT NULL,
+  	[CodAlimDiasProc] [varchar](10) NULL,
+  	[CodAlimValorFixo] [varchar](10) NULL,
+  	[CodAlimEspecie] [varchar](10) NULL,
+  	[TabIRPS] [nvarchar](20) NULL,
+  	[LigadoTimesheets] [bit] NOT NULL,
+  	[Pais] [nvarchar](2) NULL,
+  	[ModContratoCom] [varchar](250) NULL,
+  	[DataComunicacao] [datetime] NULL,
+  	[UtilizadorComunicacao] [varchar](250) NULL,
+  	[CartaoResidente] [varchar](50) NULL,
+  	[DataEmissaoCR] [datetime] NULL,
+  	[DataValidadeCR] [datetime] NULL,
+  	[LocalEmCR] [varchar](20) NULL,
+  	[ADSE] [nvarchar](3) NULL,
+  	[AguardarAposentacao] [bit] NULL,
+  	[AnosFuncaoPublica] [int] NULL,
+  	[ComprovativoGravidez] [bit] NULL,
+  	[DataAdmissaoOrgVinc] [datetime] NULL,
+  	[DataAposentacao] [datetime] NULL,
+  	[DataCessacaoOrgVinc] [datetime] NULL,
+  	[DataDespachoDR] [datetime] NULL,
+  	[DataGravidez] [datetime] NULL,
+  	[DataInicioAdmPub] [datetime] NULL,
+  	[DataInicioCategoria] [datetime] NULL,
+  	[DataInicioEscalao] [datetime] NULL,
+  	[DataValidadeADSE] [datetime] NULL,
+  	[DiarioRepublica] [nvarchar](50) NULL,
+  	[DiasFuncaoPublica] [int] NULL,
+  	[DiasNaCategoria] [int] NULL,
+  	[DiasNoEscalao] [int] NULL,
+  	[DireitoSubsidioPreNatal] [bit] NULL,
+  	[EducacaoFuncao] [nvarchar](1) NULL,
+  	[EducacaoSituacao] [nvarchar](2) NULL,
+  	[Escalao] [int] NULL,
+  	[InactivoTemp] [bit] NULL,
+  	[Indice] [int] NULL,
+  	[MesesFuncaoPublica] [int] NULL,
+  	[MotivoMC] [varchar](2) NULL,
+  	[NivelRemuneratorio] [nvarchar](7) NULL,
+  	[NumADSE] [nvarchar](12) NULL,
+  	[NumeroNaciturnos] [int] NULL,
+  	[OrgPagador] [varchar](5) NULL,
+  	[OrgVinculo] [varchar](5) NULL,
+  	[PercentIndice100] [float] NULL,
+  	[ProcessoExecucao] [nvarchar](20) NULL,
+  	[RegimeIndice100] [nvarchar](3) NULL,
+  	[TabelaIrsAposentacao] [nvarchar](2) NULL,
+  	[TipoBalancoSocial] [tinyint] NULL,
+  	[Utilizador] [nvarchar](20) NULL,
+  	[ValorDifPosicaoRemun] [float] NULL,
+  	[ValorMensalAposentacao] [float] NULL,
+  	[IdentContrFundos] [nvarchar](15) NULL,
+  	[DataComFundos] [datetime] NULL,
+  	[DataCessaFundos] [datetime] NULL,
+  	[MotivoCessaFundos] [nvarchar](4) NULL,
+  	[DataComAltVencFundos] [datetime] NULL,
+  	[RegimeExRes] [tinyint] NULL,
+  	[ModalidadeVinculacao] [nvarchar](3) NULL,
+  	[CodInvInt] [nvarchar](30) NULL,
+  	[NumBiDC] [nvarchar](4) NULL,
+  	[HorasVolIEESP] [float] NULL,
+  	[MedHorasVolIEESP] [tinyint] NOT NULL,
+  	[ExternoIEESP] [nvarchar](2) NULL,
+  	[CodInvNac] [nvarchar](30) NULL,
+  	[ProcedimentoAdmissaoContrato] [nvarchar](3) NULL,
+  	[FuncSubstituido] [nvarchar](10) NULL,
+  	[AnoIRSJovem] [smallint] NULL,
+  	[DataUltComunicacaoAlt] [datetime] NULL,
+   CONSTRAINT [Funcionarios01] PRIMARY KEY CLUSTERED 
+  (
+  	[Codigo] ASC
+  )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
 GO
 
--- Chart of Accounts: modeled after the Portuguese SNC (Sistema de
--- Normalização Contabilística) chart-of-accounts structure. parent_account
--- points at another row's account_code within the same company (not a FK) —
--- same shape as schema.sql.
-IF OBJECT_ID('dbo.chart_of_accounts', 'U') IS NULL
+-- Invoices: verbatim from priexpress_schema.sql (dbo.CabecDoc), wrapped for idempotency.
+IF OBJECT_ID('dbo.CabecDoc', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.chart_of_accounts (
-    id             UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id     UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    account_code   NVARCHAR(MAX) NOT NULL,
-    account_name   NVARCHAR(MAX) NOT NULL,
-    account_class  NVARCHAR(MAX) NULL,
-    snc_class      NVARCHAR(MAX) NULL,
-    parent_account NVARCHAR(MAX) NULL,
-    created_at     DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
--- Mirrors schema.sql's ALTER TABLE ... ADD COLUMN IF NOT EXISTS guards for
--- dev DBs that predate these columns — including schema.sql's own
--- NOT NULL-in-CREATE-but-nullable-in-fallback quirk for account_code/name
--- (can't add a NOT NULL column with no default to a table that may already
--- have rows), kept identical here for fidelity.
-IF COL_LENGTH('dbo.chart_of_accounts', 'account_code') IS NULL
-  ALTER TABLE dbo.chart_of_accounts ADD account_code NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.chart_of_accounts', 'account_name') IS NULL
-  ALTER TABLE dbo.chart_of_accounts ADD account_name NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.chart_of_accounts', 'account_class') IS NULL
-  ALTER TABLE dbo.chart_of_accounts ADD account_class NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.chart_of_accounts', 'snc_class') IS NULL
-  ALTER TABLE dbo.chart_of_accounts ADD snc_class NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.chart_of_accounts', 'parent_account') IS NULL
-  ALTER TABLE dbo.chart_of_accounts ADD parent_account NVARCHAR(MAX) NULL;
-GO
-
--- Contracts. third_party_id and source_document are plain ints, not FKs —
--- same loose-reference shape as schema.sql.
-IF OBJECT_ID('dbo.contracts', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.contracts (
-    id              UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id      UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    third_party_id  INT NULL,
-    contract_ref    NVARCHAR(MAX) NULL,
-    title           NVARCHAR(MAX) NULL,
-    start_date      DATE NULL,
-    end_date        DATE NULL,
-    monthly_amount  NUMERIC(14, 2) NULL,
-    full_text       NVARCHAR(MAX) NULL,
-    source_document INT NULL,
-    created_at      DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-IF COL_LENGTH('dbo.contracts', 'third_party_id') IS NULL
-  ALTER TABLE dbo.contracts ADD third_party_id INT NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'contract_ref') IS NULL
-  ALTER TABLE dbo.contracts ADD contract_ref NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'title') IS NULL
-  ALTER TABLE dbo.contracts ADD title NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'start_date') IS NULL
-  ALTER TABLE dbo.contracts ADD start_date DATE NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'end_date') IS NULL
-  ALTER TABLE dbo.contracts ADD end_date DATE NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'monthly_amount') IS NULL
-  ALTER TABLE dbo.contracts ADD monthly_amount NUMERIC(14, 2) NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'full_text') IS NULL
-  ALTER TABLE dbo.contracts ADD full_text NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.contracts', 'source_document') IS NULL
-  ALTER TABLE dbo.contracts ADD source_document INT NULL;
-GO
-
--- Documents. entity_id is a loose int reference, same pattern as
--- contracts.third_party_id/source_document. `date` is quoted in schema.sql
--- since it collides with the Postgres reserved word; bracket-quoted here for
--- the same reason (DATE is a T-SQL built-in type name).
-IF OBJECT_ID('dbo.documents', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.documents (
-    id             UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id     UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    document_type  NVARCHAR(MAX) NULL,
-    file_name      NVARCHAR(MAX) NULL,
-    entity_id      INT NULL,
-    [date]         DATE NULL,
-    created_at     DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-IF COL_LENGTH('dbo.documents', 'document_type') IS NULL
-  ALTER TABLE dbo.documents ADD document_type NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.documents', 'file_name') IS NULL
-  ALTER TABLE dbo.documents ADD file_name NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.documents', 'entity_id') IS NULL
-  ALTER TABLE dbo.documents ADD entity_id INT NULL;
-GO
-IF COL_LENGTH('dbo.documents', 'date') IS NULL
-  ALTER TABLE dbo.documents ADD [date] DATE NULL;
-GO
-
--- Stub tables for the remaining Financial Data tabs — same minimal shape as
--- schema.sql until each is fully defined.
-IF OBJECT_ID('dbo.employees', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.employees (
-    id                    UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id            UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    name                  NVARCHAR(MAX) NULL,
-    position              NVARCHAR(MAX) NULL,
-    gross_monthly_salary  NUMERIC(14, 2) NULL,
-    active                BIT NULL,
-    created_at            DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-IF COL_LENGTH('dbo.employees', 'name') IS NULL
-  ALTER TABLE dbo.employees ADD name NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.employees', 'position') IS NULL
-  ALTER TABLE dbo.employees ADD position NVARCHAR(MAX) NULL;
-GO
-IF COL_LENGTH('dbo.employees', 'gross_monthly_salary') IS NULL
-  ALTER TABLE dbo.employees ADD gross_monthly_salary NUMERIC(14, 2) NULL;
-GO
-IF COL_LENGTH('dbo.employees', 'active') IS NULL
-  ALTER TABLE dbo.employees ADD active BIT NULL;
-GO
-
-IF OBJECT_ID('dbo.invoices', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.invoices (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-
-IF OBJECT_ID('dbo.journal_entries', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.journal_entries (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-
-IF OBJECT_ID('dbo.journal_lines', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.journal_lines (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-
-IF OBJECT_ID('dbo.payroll', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.payroll (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
-END
-GO
-
-IF OBJECT_ID('dbo.third_parties', 'U') IS NULL
-BEGIN
-  CREATE TABLE dbo.third_parties (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[CabecDoc](
+  	[Data] [datetime] NULL,
+  	[Zona] [nvarchar](2) NULL,
+  	[Entidade] [nvarchar](12) NULL,
+  	[TipoDoc] [nvarchar](5) NOT NULL,
+  	[NumDoc] [int] NOT NULL,
+  	[CondPag] [nvarchar](2) NULL,
+  	[DescPag] [real] NULL,
+  	[TotalMerc] [float] NULL,
+  	[TotalIva] [float] NULL,
+  	[TotalDesc] [float] NULL,
+  	[TotalOutros] [float] NULL,
+  	[ModoExp] [nvarchar](5) NULL,
+  	[ModoPag] [nvarchar](5) NULL,
+  	[UtilizaMoradaAltEntrega] [bit] NULL,
+  	[MoradaAltEntrega] [nvarchar](10) NULL,
+  	[Seccao] [nvarchar](2) NULL,
+  	[RegimeIva] [nvarchar](1) NULL,
+  	[Moeda] [nvarchar](3) NULL,
+  	[Cambio] [float] NULL,
+  	[Requisicao] [nvarchar](20) NULL,
+  	[DataVencimento] [datetime] NULL,
+  	[LocalCarga] [nvarchar](50) NULL,
+  	[HoraCarga] [nvarchar](5) NULL,
+  	[LocalDescarga] [nvarchar](50) NULL,
+  	[HoraDescarga] [nvarchar](5) NULL,
+  	[Matricula] [nvarchar](25) NULL,
+  	[Filial] [nvarchar](3) NOT NULL,
+  	[Serie] [nvarchar](5) NOT NULL,
+  	[MoedaDaUEM] [bit] NULL,
+  	[Arredondamento] [smallint] NULL,
+  	[ArredondamentoIva] [smallint] NULL,
+  	[IntrastatNatA] [nvarchar](2) NULL,
+  	[IntrastatNatB] [nvarchar](2) NULL,
+  	[IntrastatCondEnt] [nvarchar](3) NULL,
+  	[IntrastatModoTransp] [nvarchar](1) NULL,
+  	[IntrastatPorto] [nvarchar](4) NULL,
+  	[Diario] [nvarchar](5) NULL,
+  	[NumDiario] [int] NULL,
+  	[DataUltimaActualizacao] [datetime] NULL,
+  	[RespCobranca] [nvarchar](3) NULL,
+  	[NumContribuinte] [nvarchar](20) NULL,
+  	[Nome] [nvarchar](50) NULL,
+  	[Morada] [nvarchar](50) NULL,
+  	[Localidade] [nvarchar](50) NULL,
+  	[CodPostal] [nvarchar](15) NULL,
+  	[CodPostalLocalidade] [nvarchar](50) NULL,
+  	[Utilizador] [nvarchar](20) NULL,
+  	[Posto] [nvarchar](3) NULL,
+  	[DocsOriginais] [ntext] NULL,
+  	[Observacoes] [ntext] NULL,
+  	[PercentagemRetencao] [float] NULL,
+  	[TotalRetencao] [float] NULL,
+  	[DataCarga] [nvarchar](20) NULL,
+  	[DataDescarga] [nvarchar](20) NULL,
+  	[TipoOperacao] [nvarchar](2) NULL,
+  	[VersaoUltAct] [timestamp] NULL,
+  	[Id] [uniqueidentifier] NOT NULL,
+  	[IdCabecTesouraria] [uniqueidentifier] NULL,
+  	[TipoEntidade] [nvarchar](1) NULL,
+  	[DescEntidade] [real] NULL,
+  	[Responsavel] [nvarchar](25) NULL,
+  	[Referencia] [nvarchar](20) NULL,
+  	[FluxoDocumental] [nvarchar](3) NULL,
+  	[AnoCBL] [smallint] NULL,
+  	[IdGDOC] [uniqueidentifier] NULL,
+  	[ObraID] [uniqueidentifier] NULL,
+  	[IdCabecEstorno] [uniqueidentifier] NULL,
+  	[CDU_CabVar1] [nvarchar](15) NULL,
+  	[CDU_CabVar2] [nvarchar](15) NULL,
+  	[CDU_CabVar3] [nvarchar](15) NULL,
+  	[CDU_CabVar4] [nvarchar](15) NULL,
+  	[CDU_CabVar5] [nvarchar](15) NULL,
+  	[CDU_CabVar1ENC] [nvarchar](15) NULL,
+  	[CDU_CabVar2ENC] [nvarchar](15) NULL,
+  	[CDU_CabVar3ENC] [nvarchar](15) NULL,
+  	[CDU_CabVar4ENC] [nvarchar](15) NULL,
+  	[CDU_CabVar5ENC] [nvarchar](15) NULL,
+  	[IdDocB2B] [uniqueidentifier] NULL,
+  	[LocalOperacao] [varchar](2) NULL,
+  	[TotalEcotaxa] [float] NOT NULL,
+  	[DE_IL] [nvarchar](20) NULL,
+  	[CambioMBase] [float] NOT NULL,
+  	[CambioMAlt] [float] NOT NULL,
+  	[IDDiarioCaixa] [uniqueidentifier] NULL,
+  	[TipoEntidadeEntrega] [nvarchar](1) NULL,
+  	[EntidadeEntrega] [nvarchar](12) NULL,
+  	[NomeEntrega] [nvarchar](50) NULL,
+  	[MoradaEntrega] [nvarchar](50) NULL,
+  	[LocalidadeEntrega] [nvarchar](50) NULL,
+  	[CodPostalEntrega] [nvarchar](15) NULL,
+  	[CodPostalLocalidadeEntrega] [nvarchar](50) NULL,
+  	[IdCabecMovCbl] [uniqueidentifier] NULL,
+  	[TotalRecargo] [float] NULL,
+  	[TotalRetencaoGarantia] [float] NULL,
+  	[Grupo] [varchar](30) NULL,
+  	[Origem] [varchar](15) NULL,
+  	[OrigemPOS] [bit] NOT NULL,
+  	[Versao] [varchar](5) NULL,
+  	[IDAvenca] [uniqueidentifier] NULL,
+  	[ContaDomiciliacao] [varchar](5) NULL,
+  	[Distrito] [varchar](2) NULL,
+  	[DistritoEntrega] [varchar](2) NULL,
+  	[IntrastatRegEstatistico] [varchar](1) NULL,
+  	[Morada2] [nvarchar](50) NULL,
+  	[TipoLancamento] [varchar](3) NULL,
+  	[TipoEntidadeFac] [nvarchar](1) NULL,
+  	[EntidadeFac] [nvarchar](12) NULL,
+  	[NomeFac] [nvarchar](150) NULL,
+  	[MoradaFac] [nvarchar](50) NULL,
+  	[Morada2Fac] [nvarchar](50) NULL,
+  	[LocalidadeFac] [nvarchar](50) NULL,
+  	[CodigoPostalFac] [nvarchar](15) NULL,
+  	[LocalidadeCodigoPostalFac] [nvarchar](50) NULL,
+  	[NumContribuinteFac] [nvarchar](20) NULL,
+  	[DistritoFac] [varchar](2) NULL,
+  	[EntidadeDescarga] [nvarchar](12) NULL,
+  	[TotalIEC] [float] NULL,
+  	[DataGravacao] [datetime] NOT NULL,
+  	[PendentePorLinha] [bit] NOT NULL,
+  	[Assinatura] [nvarchar](255) NULL,
+  	[VersaoAssinatura] [nvarchar](20) NULL,
+  	[RegimeIvaReembolsos] [smallint] NOT NULL,
+  	[EspacoFiscal] [smallint] NOT NULL,
+  	[Morada2Entrega] [nvarchar](50) NULL,
+  	[IdOportunidade] [uniqueidentifier] NULL,
+  	[NumProposta] [smallint] NULL,
+  	[PaisFac] [nvarchar](2) NULL,
+  	[Pais] [nvarchar](2) NULL,
+  	[RefDocOrig] [varchar](50) NULL,
+  	[Certificado] [varchar](50) NULL,
+  	[IdDocOrigem] [uniqueidentifier] NULL,
+  	[ModuloOrigem] [nvarchar](1) NULL,
+  	[CambioADataDoc] [bit] NOT NULL,
+  	[WBSItem] [nvarchar](100) NULL,
+  	[B2BTrataTrans] [bit] NOT NULL,
+  	[B2BEnvioNaGravacao] [bit] NULL,
+  	[PaisEntrega] [nvarchar](2) NULL,
+  	[MoradaCarga] [nvarchar](50) NULL,
+  	[Morada2Carga] [nvarchar](50) NULL,
+  	[LocalidadeCarga] [nvarchar](50) NULL,
+  	[CodPostalCarga] [nvarchar](15) NULL,
+  	[CodPostalLocalidadeCarga] [nvarchar](50) NULL,
+  	[DistritoCarga] [varchar](2) NULL,
+  	[PaisCarga] [nvarchar](2) NULL,
+  	[CAE] [varchar](15) NULL,
+  	[Resumo] [bit] NULL,
+  	[IDRegularizacao] [uniqueidentifier] NULL,
+  	[TotalIS] [float] NOT NULL,
+  	[TrataIvaCaixa] [bit] NOT NULL,
+  	[CDU_CodigoLocalizacao] [varchar](13) NULL,
+  	[ContratoID] [uniqueidentifier] NULL,
+  	[Documento] [nvarchar](50) NULL,
+  	[RefTipoDocOrig] [varchar](50) NULL,
+  	[RefSerieDocOrig] [varchar](50) NULL,
+  	[TotalDocumento] [float] NOT NULL,
+  	[CertificadoRecuperacao] [nvarchar](50) NULL,
+  	[MargemDoc] [float] NOT NULL,
+  	[TipoFiscal] [varchar](3) NULL,
+  	[TipoTerceiro] [nvarchar](3) NULL,
+  	[Desatualizado] [bit] NOT NULL,
+  	[DataHoraCarga] [datetime] NULL,
+  	[DataHoraDescarga] [datetime] NULL,
+  	[LastIndexDate] [datetime] NULL,
+  	[PercentagemCativacao] [float] NULL,
+  	[ValorEntregue] [float] NULL,
+  	[ServContinuados] [bit] NOT NULL,
+  	[CriadoPor] [nvarchar](20) NULL,
+   CONSTRAINT [CabecDoc01] PRIMARY KEY CLUSTERED 
+  (
+  	[Id] ASC
+  )WITH (PAD_INDEX = ON, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
 GO
 
--- Chat: backs the sidebar "Recent" list and message history. Same shape as
--- schema.sql; company_id and user_id are independent FKs (not a diamond
--- through any shared parent), so both being ON DELETE CASCADE is legal
--- T-SQL — SQL Server only rejects *ambiguous* multi-path cascades.
-IF OBJECT_ID('dbo.chat_threads', 'U') IS NULL
+-- Clients: verbatim from priexpress_schema.sql (dbo.Clientes), wrapped for idempotency.
+IF OBJECT_ID('dbo.Clientes', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.chat_threads (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    company_id UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.companies(id) ON DELETE CASCADE,
-    user_id    UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.users(id) ON DELETE CASCADE,
-    title      NVARCHAR(MAX) NOT NULL DEFAULT 'New Chat',
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[Clientes](
+  	[Cliente] [nvarchar](12) NOT NULL,
+  	[Nome] [nvarchar](50) NULL,
+  	[Fac_Mor] [nvarchar](50) NULL,
+  	[Fac_Local] [nvarchar](50) NULL,
+  	[Fac_Cp] [nvarchar](15) NULL,
+  	[Fac_Cploc] [nvarchar](50) NULL,
+  	[Fac_Tel] [nvarchar](20) NULL,
+  	[Fac_Fax] [nvarchar](20) NULL,
+  	[Desconto] [real] NULL,
+  	[TipoPrec] [nvarchar](1) NULL,
+  	[TipoCred] [nvarchar](1) NULL,
+  	[LimiteCred] [float] NULL,
+  	[TotalDeb] [float] NULL,
+  	[NumContrib] [nvarchar](20) NULL,
+  	[Pais] [nvarchar](2) NULL,
+  	[TipoCli] [nvarchar](1) NULL,
+  	[AvisosVenc] [bit] NULL,
+  	[ModoPag] [nvarchar](5) NULL,
+  	[CondPag] [nvarchar](2) NULL,
+  	[Moeda] [nvarchar](3) NULL,
+  	[ModoExp] [nvarchar](5) NULL,
+  	[Vendedor] [nvarchar](3) NULL,
+  	[Zona] [nvarchar](2) NULL,
+  	[NumViasDoc] [smallint] NULL,
+  	[ExcluirRecap] [bit] NULL,
+  	[EnderecoWeb] [nvarchar](50) NULL,
+  	[DataCriacao] [datetime] NULL,
+  	[CriacaoAutomatica] [bit] NULL,
+  	[RubricaPagamentos] [nvarchar](35) NULL,
+  	[RubricaRecebimentos] [nvarchar](35) NULL,
+  	[TipoTerceiro] [nvarchar](3) NULL,
+  	[ClienteAnulado] [bit] NULL,
+  	[VendasNaoConvertidas] [float] NULL,
+  	[EncomendasPendentes] [float] NULL,
+  	[IntrastatCliente] [bit] NULL,
+  	[IntrastatPorto] [nvarchar](4) NULL,
+  	[SuporteAvisosVencimento] [nvarchar](1) NULL,
+  	[DataUltimaActualizacao] [datetime] NULL,
+  	[Notas] [ntext] NULL,
+  	[EfectuaRetencao] [bit] NULL,
+  	[Idioma] [nvarchar](3) NULL,
+  	[UtilizaIdioma] [bit] NULL,
+  	[TipoOperIntraCom] [nvarchar](2) NULL,
+  	[VersaoUltAct] [timestamp] NULL,
+  	[EfectuaOutrasRetencoes] [bit] NULL,
+  	[IdContactoCob] [uniqueidentifier] NULL,
+  	[ExcluirAlertasCob] [bit] NULL,
+  	[AlertaValorSaldoCob] [bit] NULL,
+  	[ValorSaldoCob] [float] NULL,
+  	[AlertaIdadeSaldoCob] [bit] NULL,
+  	[IdadeSaldoCob] [smallint] NULL,
+  	[CalendarioCob] [ntext] NULL,
+  	[Fac_Mor1] [nvarchar](50) NULL,
+  	[LimiteCredValor] [bit] NULL,
+  	[LimiteCredIdade] [bit] NULL,
+  	[LimiteIdadeSaldo] [int] NULL,
+  	[LimiteValorSaldo] [float] NULL,
+  	[IdGDOC] [uniqueidentifier] NULL,
+  	[Telefone2] [nvarchar](20) NULL,
+  	[DebitoLetrasNovas] [bit] NULL,
+  	[DebitoLetrasReformadas] [bit] NULL,
+  	[CondDebitoLetrasParticular] [bit] NULL,
+  	[JuroLetras] [float] NULL,
+  	[JuroLetrasPostecipado] [bit] NULL,
+  	[ComissaoLetras] [float] NULL,
+  	[ComissaoLetrasPercent] [bit] NULL,
+  	[PortesLetras] [float] NULL,
+  	[CondDebitoLetrasParticularRef] [bit] NULL,
+  	[JuroLetrasRef] [float] NULL,
+  	[JuroLetrasPostecipadoRef] [bit] NULL,
+  	[ComissaoLetrasRef] [float] NULL,
+  	[ComissaoLetrasPercentRef] [bit] NULL,
+  	[PortesLetrasRef] [float] NULL,
+  	[CDU_CampoVar1] [nvarchar](15) NULL,
+  	[CDU_CampoVar2] [nvarchar](15) NULL,
+  	[CDU_CampoVar3] [nvarchar](15) NULL,
+  	[B2BTrataTrans] [bit] NULL,
+  	[B2BUtilArtigosParceiro] [bit] NULL,
+  	[B2BEnvioNaGravacao] [bit] NULL,
+  	[B2BEnderecoMail] [nvarchar](100) NULL,
+  	[B2BCertificado] [nvarchar](250) NULL,
+  	[LocalOperacao] [varchar](2) NULL,
+  	[SujeitoRecargo] [bit] NULL,
+  	[Toc] [real] NULL,
+  	[FuncionarioToc] [nvarchar](10) NULL,
+  	[FuncionarioResp] [nvarchar](10) NULL,
+  	[CodPRIEMPRE] [nvarchar](10) NULL,
+  	[Delegacao] [nvarchar](10) NULL,
+  	[CentroOperacional] [nvarchar](10) NULL,
+  	[Situacao] [nvarchar](10) NULL,
+  	[Equipa] [nvarchar](10) NULL,
+  	[Descricao] [varchar](50) NULL,
+  	[Distrito] [varchar](2) NULL,
+  	[GestaoDiasPag] [bit] NULL,
+  	[DiaPagamento1] [tinyint] NULL,
+  	[DiaPagamento2] [tinyint] NULL,
+  	[DiaPagamento3] [tinyint] NULL,
+  	[NumDiasRetrocesso] [tinyint] NULL,
+  	[DiaInicPerNaoPag1] [varchar](5) NULL,
+  	[DiaFinPerNaoPag1] [varchar](5) NULL,
+  	[DiaInicPerNaoPag2] [varchar](5) NULL,
+  	[DiaFinPerNaoPag2] [varchar](5) NULL,
+  	[PessoaSingular] [bit] NOT NULL,
+  	[CodigoGLN] [varchar](20) NULL,
+  	[IDB2BFormato] [varchar](10) NULL,
+  	[B2BEnderecoEnvio] [varchar](250) NULL,
+  	[ModoRec] [nvarchar](5) NULL,
+  	[Fac_Mor2] [nvarchar](50) NULL,
+  	[NomeFiscal] [nvarchar](150) NULL,
+  	[EncargosBanco] [bit] NULL,
+  	[B2BDocDownload] [bit] NULL,
+  	[B2BArtigosParceiro] [nvarchar](12) NULL,
+  	[B2BUtilUnidadesParceiro] [bit] NULL,
+  	[B2BUnidadesParceiro] [nvarchar](12) NULL,
+  	[B2BIgnoraEnvioParceiro] [bit] NULL,
+  	[B2BEnvioParceiro] [nvarchar](12) NULL,
+  	[B2BIgnoraTransaccoes] [bit] NULL,
+  	[B2BTransaccoes] [nvarchar](130) NULL,
+  	[CodigoIEC] [nvarchar](15) NULL,
+  	[CodigoIsencaoIEC] [nvarchar](5) NULL,
+  	[IsentoIEC] [bit] NULL,
+  	[SegmentoTerceiro] [nvarchar](10) NULL,
+  	[RegimeIvaReembolsos] [smallint] NOT NULL,
+  	[Factoring] [bit] NOT NULL,
+  	[CambioADataDoc] [bit] NOT NULL,
+  	[ContribuinteNaoResidente] [nvarchar](20) NULL,
+  	[IntegraCessaoFactoring] [bit] NULL,
+  	[ActividadeEmpresarial] [bit] NOT NULL,
+  	[AutoFacturacao] [bit] NOT NULL,
+  	[TrataIvaCaixa] [bit] NOT NULL,
+  	[CDU_GLNFornecedor] [varchar](13) NULL,
+  	[CDU_IgnoraElemFin] [bit] NULL,
+  	[CDU_AplicaDescComercIntegracao] [bit] NULL,
+  	[CDU_IgnoraDescArtB2B] [bit] NULL,
+  	[VersaoCloud] [int] NULL,
+  	[ActualizacaoCloud] [nvarchar](30) NULL,
+  	[ActualizacaoERP] [nvarchar](30) NULL,
+  	[FacturacaoAgrupadaBilling] [bit] NOT NULL,
+  	[EntidadeParceira] [nvarchar](5) NULL,
+  	[eGAR_Isenta] [bit] NOT NULL,
+  	[eGAR_TipoProdutor] [varchar](3) NULL,
+  	[eGAR_CodigoAPA] [varchar](15) NULL,
+  	[eGAR_NumPGL] [varchar](50) NULL,
+  	[TipoRemetente] [nvarchar](25) NULL,
+  	[CodigoLocal] [nvarchar](20) NULL,
+  	[LastIndexDate] [datetime] NULL,
+  	[IVACativo] [bit] NULL,
+  	[PercentagemCativacao] [float] NULL,
+  	[ContaRecebimentos] [nvarchar](5) NULL,
+  	[EntidadeDoEstado] [bit] NOT NULL,
+  	[CDU_IgnoraElemEntidade] [bit] NULL,
+   CONSTRAINT [Clientes01] PRIMARY KEY CLUSTERED 
+  (
+  	[Cliente] ASC
+  )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
 GO
 
-IF OBJECT_ID('dbo.chat_messages', 'U') IS NULL
+-- Suppliers: verbatim from priexpress_schema.sql (dbo.Fornecedores), wrapped for idempotency.
+IF OBJECT_ID('dbo.Fornecedores', 'U') IS NULL
 BEGIN
-  CREATE TABLE dbo.chat_messages (
-    id         UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID() PRIMARY KEY,
-    thread_id  UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.chat_threads(id) ON DELETE CASCADE,
-    role       NVARCHAR(MAX) NOT NULL CHECK (role IN ('user', 'assistant')),
-    content    NVARCHAR(MAX) NOT NULL,
-    created_at DATETIME2 NOT NULL DEFAULT GETDATE()
-  );
+  CREATE TABLE [dbo].[Fornecedores](
+  	[Fornecedor] [nvarchar](12) NOT NULL,
+  	[Nome] [nvarchar](50) NULL,
+  	[Morada] [nvarchar](50) NULL,
+  	[Local] [nvarchar](50) NULL,
+  	[Cp] [nvarchar](15) NULL,
+  	[CpLoc] [nvarchar](50) NULL,
+  	[Tel] [nvarchar](20) NULL,
+  	[Fax] [nvarchar](20) NULL,
+  	[Desconto] [real] NULL,
+  	[PrazoEnt] [nvarchar](3) NULL,
+  	[TotalDeb] [float] NULL,
+  	[LimiteCred] [float] NULL,
+  	[NumContrib] [nvarchar](20) NULL,
+  	[Pais] [nvarchar](2) NULL,
+  	[TipoFor] [nvarchar](1) NULL,
+  	[CondPag] [nvarchar](2) NULL,
+  	[ModoPag] [nvarchar](5) NULL,
+  	[Moeda] [nvarchar](3) NULL,
+  	[ModoExp] [nvarchar](5) NULL,
+  	[NumViasDoc] [smallint] NULL,
+  	[ExcluirRecap] [bit] NULL,
+  	[EnderecoWeb] [nvarchar](50) NULL,
+  	[DataCriacao] [datetime] NULL,
+  	[CriacaoAutomatica] [bit] NULL,
+  	[RubricaPagamentos] [nvarchar](35) NULL,
+  	[RubricaRecebimentos] [nvarchar](35) NULL,
+  	[TipoTerceiro] [nvarchar](3) NULL,
+  	[FornecedorAnulado] [bit] NULL,
+  	[RegimeEspecial] [bit] NULL,
+  	[ComprasNaoConvertidas] [float] NULL,
+  	[EncomendasPendentes] [float] NULL,
+  	[IntrastatFornecedor] [bit] NULL,
+  	[IntrastatPorto] [nvarchar](4) NULL,
+  	[DataUltimaActualizacao] [datetime] NULL,
+  	[Notas] [ntext] NULL,
+  	[EfectuaRetencao] [bit] NULL,
+  	[ValorRetencao] [float] NULL,
+  	[TextoExcepcaoRetencao] [nvarchar](100) NULL,
+  	[Idioma] [nvarchar](3) NULL,
+  	[UtilizaIdioma] [bit] NULL,
+  	[VersaoUltAct] [timestamp] NULL,
+  	[TipoRendimento] [nvarchar](5) NULL,
+  	[EfectuaOutrasRetencoes] [bit] NULL,
+  	[Morada1] [nvarchar](50) NULL,
+  	[LimiteCredValor] [bit] NULL,
+  	[LimiteCredIdade] [bit] NULL,
+  	[LimiteIdadeSaldo] [int] NULL,
+  	[LimiteValorSaldo] [float] NULL,
+  	[IdGDOC] [uniqueidentifier] NULL,
+  	[PosCustosBalSoc] [tinyint] NULL,
+  	[CDU_CampoVar1] [nvarchar](15) NULL,
+  	[CDU_CampoVar2] [nvarchar](15) NULL,
+  	[CDU_CampoVar3] [nvarchar](15) NULL,
+  	[B2BTrataTrans] [bit] NULL,
+  	[B2BUtilArtigosParceiro] [bit] NULL,
+  	[B2BEnvioNaGravacao] [bit] NULL,
+  	[B2BEnderecoMail] [nvarchar](100) NULL,
+  	[B2BCertificado] [nvarchar](250) NULL,
+  	[LocalOperacao] [varchar](2) NULL,
+  	[Descricao] [varchar](50) NULL,
+  	[Distrito] [varchar](2) NULL,
+  	[GestaoDiasPag] [bit] NULL,
+  	[DiaPagamento1] [tinyint] NULL,
+  	[DiaPagamento2] [tinyint] NULL,
+  	[DiaPagamento3] [tinyint] NULL,
+  	[NumDiasRetrocesso] [tinyint] NULL,
+  	[PessoaSingular] [bit] NOT NULL,
+  	[CodigoGLN] [varchar](20) NULL,
+  	[IDB2BFormato] [varchar](10) NULL,
+  	[B2BEnderecoEnvio] [varchar](250) NULL,
+  	[ModoRec] [nvarchar](5) NULL,
+  	[Morada2] [nvarchar](50) NULL,
+  	[NomeFiscal] [nvarchar](150) NULL,
+  	[B2BDocDownload] [bit] NULL,
+  	[B2BArtigosParceiro] [nvarchar](12) NULL,
+  	[B2BUtilUnidadesParceiro] [bit] NULL,
+  	[B2BUnidadesParceiro] [nvarchar](12) NULL,
+  	[B2BIgnoraEnvioParceiro] [bit] NULL,
+  	[B2BEnvioParceiro] [nvarchar](12) NULL,
+  	[B2BIgnoraTransaccoes] [bit] NULL,
+  	[B2BTransaccoes] [nvarchar](130) NULL,
+  	[CodigoIEC] [nvarchar](15) NULL,
+  	[CodigoIsencaoIEC] [nvarchar](5) NULL,
+  	[IsentoIEC] [bit] NULL,
+  	[SegmentoTerceiro] [nvarchar](10) NULL,
+  	[RegimeIvaReembolsos] [smallint] NOT NULL,
+  	[CambioADataDoc] [bit] NOT NULL,
+  	[ContribuinteNaoResidente] [nvarchar](20) NULL,
+  	[AutoFacturacao] [bit] NOT NULL,
+  	[SubUtilizadorAT] [varchar](50) NULL,
+  	[SenhaSubUtilizadorAT] [varchar](200) NULL,
+  	[Matricula] [varchar](50) NULL,
+  	[Conservatoria] [varchar](50) NULL,
+  	[CapitalSocial] [float] NULL,
+  	[TrataIvaCaixa] [bit] NOT NULL,
+  	[CDU_IgnoraElemFin] [bit] NULL,
+  	[CDU_AplicaDescComercIntegracao] [bit] NULL,
+  	[CDU_IgnoraDescArtB2B] [bit] NULL,
+  	[VersaoCloud] [int] NULL,
+  	[ActualizacaoCloud] [nvarchar](30) NULL,
+  	[ActualizacaoERP] [nvarchar](30) NULL,
+  	[ActividadeEmpresarial] [bit] NOT NULL,
+  	[EntidadeParceira] [nvarchar](5) NULL,
+  	[ControlaPagamentosDivida] [bit] NULL,
+  	[DataValidadeFinancas] [datetime] NULL,
+  	[DataValidadeSegSocial] [datetime] NULL,
+  	[eGAR_Isenta] [bit] NOT NULL,
+  	[eGAR_TipoProdutor] [varchar](3) NULL,
+  	[eGAR_CodigoAPA] [varchar](15) NULL,
+  	[eGAR_NumPGL] [varchar](50) NULL,
+  	[TipoRemetente] [nvarchar](25) NULL,
+  	[CodigoLocal] [nvarchar](20) NULL,
+  	[IVACativo] [bit] NULL,
+  	[PercentagemCativacao] [float] NULL,
+   CONSTRAINT [Fornecedores01] PRIMARY KEY CLUSTERED 
+  (
+  	[Fornecedor] ASC
+  )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+  ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
-GO
-
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_bank_transactions_company' AND object_id = OBJECT_ID('dbo.bank_transactions'))
-  CREATE INDEX idx_bank_transactions_company ON dbo.bank_transactions(company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_chart_of_accounts_company' AND object_id = OBJECT_ID('dbo.chart_of_accounts'))
-  CREATE INDEX idx_chart_of_accounts_company ON dbo.chart_of_accounts(company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_contracts_company' AND object_id = OBJECT_ID('dbo.contracts'))
-  CREATE INDEX idx_contracts_company ON dbo.contracts(company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_documents_company' AND object_id = OBJECT_ID('dbo.documents'))
-  CREATE INDEX idx_documents_company ON dbo.documents(company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_employees_company' AND object_id = OBJECT_ID('dbo.employees'))
-  CREATE INDEX idx_employees_company ON dbo.employees(company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_chat_threads_user_company' AND object_id = OBJECT_ID('dbo.chat_threads'))
-  CREATE INDEX idx_chat_threads_user_company ON dbo.chat_threads(user_id, company_id);
-GO
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_chat_messages_thread' AND object_id = OBJECT_ID('dbo.chat_messages'))
-  CREATE INDEX idx_chat_messages_thread ON dbo.chat_messages(thread_id);
 GO

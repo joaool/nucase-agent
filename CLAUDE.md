@@ -89,20 +89,24 @@ endpoints need to call it too. On the client, `CompanyContext`
 
 ### Financial Data: allowlist-driven generic endpoint
 
-There is **one** endpoint for all 10 Financial Data tabs — `GET /api/financial/:tableKey` — not
+There is **one** endpoint for all 7 Financial Data tabs — `GET /api/financial/:tableKey` — not
 one per table. `server/src/config/financialTables.ts` is the single source of truth mapping
-URL-safe tab keys (`bank-transactions`, `chart-of-accounts`, ...) to real Postgres table names and
-display labels, plus `FINANCIAL_TAB_ORDER` for tab-bar ordering. The controller
+URL-safe tab keys (`bank-transactions`, `chart-of-accounts`, ...) to table names and display
+labels, plus `FINANCIAL_TAB_ORDER` for tab-bar ordering. The controller
 (`financialData.controller.ts`) only ever interpolates `config.table` from that allowlist into
 SQL — never `req.params` directly — since table names can't be parameterized as query args.
 Column names come back dynamically from `pg`'s result `fields`, so the client's `DataTable`
 component renders whatever columns a table has without a client-side schema.
 
-Only `bank_transactions` is fully modeled with real columns and seeded data today (it's the one
-table shown with data in the reference screenshots this app was built from). The other 9 tables
-in `server/db/schema.sql` are intentionally stubbed to `(id, company_id, created_at)` — the tab
-renders and calls the API successfully, it just shows an empty state — until each schema is
-defined and the table gets real columns added.
+> **Mid-migration: config and execution have diverged.** `config.table` values are the real
+> per-tenant SQL Server table names now (e.g. `dbo.MovimentosBancos`, PRIEXPRESS-derived), but the
+> controller above still queries **Postgres** via `pool`/`pg`. Every tab is expected to error or
+> come back empty until the SQL Server driver swap and per-tenant connection resolver land — this
+> is deliberate, not a bug. See decision 7 in
+> `.claude/skills/railway-vanna-migration/SKILL.md` for the full mapping and status. The old
+> "only `bank_transactions` is modeled, the rest are stubs" story is pre-migration history at this
+> point — `server/db/schema.sql` now only carries `bank_transactions`, `chart_of_accounts`,
+> `contracts`, plus `employees`/`invoices` as inert leftovers no tab currently maps to.
 
 ### Chat: tool-calling financial-data agent
 

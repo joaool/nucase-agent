@@ -4,3 +4,6 @@ dist/
 !.env.example
 *.log
 .DS_Store
+
+# Regenerated every run by server/db/seed.mssql.ts — never a source of truth
+server/db/*.generated.sql

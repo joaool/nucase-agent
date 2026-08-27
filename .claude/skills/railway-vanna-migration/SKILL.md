@@ -26,20 +26,36 @@ Production continues to deploy from `main`, untouched, until this branch is
 merged.
 
 - [x] Phase 0 — Decision made: adopting Vanna (not extending the tool-calling agent)
-- [ ] Phase 1 (started) — `docker-compose.yml` (SQL Server 2025) and
+- [x] Phase 1 — `docker-compose.yml` (SQL Server 2025) and
       `server/db/schema.mssql.sql` added, plus `npm run db:migrate:mssql`
       (`server/db/migrate.mssql.ts`). Postgres and `server/src` untouched.
-      **Not yet verified against a running container** — Docker wasn't
-      available in the environment this was built in; typechecks clean but
-      `docker compose up -d && npm run db:migrate:mssql` still needs a real
-      run to confirm the schema actually applies.
-- [ ] Phase 2 — DB driver swapped behind the data-access layer (`mssql`/`tedious`), dialect adapter for pagination/identifiers
-- [ ] Phase 3 — Per-tenant connection routing built (Company ID → connection string resolver)
-- [ ] Phase 4 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
-- [ ] Phase 5 — Read-only execution guard implemented in Node (mandatory, not optional)
-- [ ] Phase 6 — Metadata Postgres (pgvector) stood up on Railway for Vanna training data + tenant registry + chat history
-- [ ] Phase 7 — Deployed to Railway; Tailscale tunnel to a client network configured and tested
-- [ ] Phase 8 — Client (React) updated, if response shapes changed at all
+      `schema.mssql.sql` holds the **real** PRIEXPRESS DDL for all 7 mapped
+      tables (verbatim, sourced from a real schema dump — see decision 7).
+      **Verified** — not against the Docker container (still never actually
+      run; Docker wasn't available in the environment this was built in),
+      but against two real local SQL Server Express databases
+      (`DESKTOP-I7-1270\SQLEXPRESS`, see decision 8): applying the file via
+      `sqlcmd` succeeded with zero errors against both, correctly ran as a
+      safe no-op (all 7 tables already existed there), and the idempotency
+      guards behaved exactly as designed. `docker compose up -d` itself
+      remains untested, but the schema file it would apply is now proven
+      correct against a real SQL Server engine.
+- [x] Phase 2 — Realistic, disjoint fake data seeded into the two real local
+      example databases for all 7 confirmed tables (`server/db/seed.mssql.ts`,
+      `npm run db:seed:mssql -- --company=aurora|flamecon`). Verified
+      end-to-end against `MetalurgicaAurora` and `FlameConSolutions`: zero
+      errors, confirmed idempotent (re-run twice with identical results),
+      confirmed zero client-name overlap between the two datasets. See
+      decision 9 for what this actually took (it wasn't just "generate rows"
+      — real FK/lookup-table and circular-reference problems came up and are
+      documented there so Phase 4/5 don't rediscover them from scratch).
+- [ ] Phase 3 — DB driver swapped behind the data-access layer (`mssql`/`tedious`), dialect adapter for pagination/identifiers
+- [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection string resolver)
+- [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
+- [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
+- [ ] Phase 7 — Metadata Postgres (pgvector) stood up on Railway for Vanna training data + tenant registry + chat history
+- [ ] Phase 8 — Deployed to Railway; Tailscale tunnel to a client network configured and tested
+- [ ] Phase 9 — Client (React) updated, if response shapes changed at all
 
 ---
 
@@ -52,6 +68,12 @@ merged.
 | Intelligence & Orchestration | Vanna (self-hosted, Railway) | Generates SQL only — **never executes it** |
 | Data | On-premise SQL Server, per tenant | Read-only access; client data never leaves their network |
 | Deployment | Railway PaaS + Tailscale tunnel | Bridges Railway to each client's on-prem firewall |
+
+**The local Docker `mssql` service (`docker-compose.yml`, Phase 1) is not a
+tenant data source.** It exists solely to develop and test
+`schema.mssql.sql` locally. Every client's real Financial Data lives on
+*their own* on-premise SQL Server, per the row above — reached in production
+via a Tailscale tunnel (Phase 8), never via the local Docker container.
 
 ---
 
@@ -74,7 +96,10 @@ merged.
    DB via `userCanAccessCompany()`. In the new architecture, each tenant has
    their own physical database — Vanna and the execution layer must **never**
    receive, see, or filter on `company_id`. Isolation is which connection is
-   used, not a WHERE clause.
+   used, not a WHERE clause. Confirmed against the real PRIEXPRESS schema
+   (decision 7): none of the 7 mapped tables carry any tenant/company column
+   — the database itself is the tenant boundary, exactly as this decision
+   assumed.
 5. **Metadata lives in its own small Railway-hosted Postgres** (with
    `pgvector` for Vanna's training/vector store) — holding Vanna's training
    data, the tenant connection registry, and `chat_threads` /
@@ -103,9 +128,118 @@ merged.
    **Config is done; execution is not.** `financialData.controller.ts` still
    queries Postgres via `pg` and does not resolve a per-tenant SQL Server
    connection — every tab is expected to error or return nothing until
-   Phase 2 (driver swap) and Phase 3 (connection resolver) land. This was a
+   Phase 3 (driver swap) and Phase 4 (connection resolver) land. This was a
    deliberate config-only change, not an oversight; don't "fix" the
    controller without going through those phases.
+
+   **Real column shapes, sourced 2026-08-27.** `server/db/schema.mssql.sql`
+   holds the actual `CREATE TABLE` DDL for these 7 tables, extracted
+   verbatim from a real PRIEXPRESS schema dump
+   (`C:\Primavera tests\priexpress_schema.sql`, provided by the user) — not
+   invented. Each table is large and genuinely enterprise-shaped (78–249
+   columns), with natural/business-key primary keys (composite
+   `(Ano, Conta)` for `PlanoContas`, string codes for
+   `Clientes`/`Fornecedores`/`Funcionarios`/`FAC_CabecContratos`, a
+   `uniqueidentifier Id` for `MovimentosBancos`/`CabecDoc`) — nothing like
+   the simple UUID-PK-plus-`company_id`-plus-`created_at` shape the old
+   Postgres stub tables used. `financialData.controller.ts`'s
+   `SELECT * ... WHERE company_id = $1 ORDER BY created_at, id` won't just
+   need a different driver in Phase 3 — none of those three columns exist on
+   any of these 7 tables, so the query itself has to change shape, not just
+   dialect.
+8. **Tenancy pattern confirmed: one shared SQL Server instance, one database
+   per client — not one instance per client.** Verified against two real
+   local example databases, `MetalurgicaAurora` and `FlameConSolutions`,
+   both on the same instance (`DESKTOP-I7-1270\SQLEXPRESS`) — named after
+   the two demo companies from the Postgres seed data. This resolves the
+   open question that used to sit at the bottom of this file. The Phase 4
+   connection resolver therefore needs to vary the **database name** per
+   tenant against a given instance, not necessarily host/credentials too
+   (though that may still differ per real client's actual server).
+
+   Both example databases already had the **full** PRIEXPRESS schema
+   pre-loaded — not just the 7 tables — confirmed via `sys.tables`
+   (**1,695 tables**, all empty). That's almost certainly from someone
+   having already run the same `priexpress_schema.sql` dump this skill's
+   7-table subset was sourced from. Applying `schema.mssql.sql` against
+   both was a verified, error-free, idempotent no-op — real proof the file
+   is syntactically correct against a real SQL Server engine (see Phase 1
+   status).
+
+   This also draws a distinction worth keeping straight going forward:
+   `server/db/schema.mssql.sql` (7 tables) is a **narrow subset scoped to
+   what this app's Financial Data tabs show**, not how a real client would
+   actually get onboarded — a real client's database would come from the
+   **full** vendor PRIEXPRESS schema (1,695 tables, like
+   `priexpress_schema.sql` itself), of which our 7 are a slice. Don't treat
+   `schema.mssql.sql` as a complete onboarding script; it's a dev/testing
+   convenience for the tables this app currently cares about.
+
+   Connecting to these local example databases needs **Windows Integrated
+   Authentication** (`sqlcmd -S "DESKTOP-I7-1270\SQLEXPRESS" -E`), unlike
+   the Docker container which uses SQL Server auth (`sa` / the password in
+   `docker-compose.yml`). `server/db/migrate.mssql.ts` (the `mssql`/tedious
+   Node driver) currently only supports SQL-auth connection strings — it
+   was **not** used against these two databases; `sqlcmd` was used directly
+   instead. Phase 3/4 driver work should keep in mind that different
+   real-world SQL Server targets may need different auth modes, not just
+   different connection strings.
+9. **Realistic per-tenant seed data exists (`server/db/seed.mssql.ts`,
+   Phase 2) — and getting it inserting cleanly surfaced real constraints
+   Phase 5/6 will hit again if this isn't read first.** Hand-authored data
+   (not a random generator — matches this repo's existing `db/seed.ts`
+   convention), extending the *same* fictional businesses already in the
+   Postgres demo data (Aurora = metalworking/construction, FlameCon =
+   tech/SaaS), not a disconnected new fictional universe. Verified
+   end-to-end against the two real local example databases: zero errors,
+   idempotent on re-run, zero client-name overlap between the two datasets.
+
+   What made this non-trivial:
+   - **The real dump's FK constraints (ALTER TABLE ... FOREIGN KEY, declared
+     separately from each table's own CREATE TABLE) were never captured into
+     `schema.mssql.sql`** — only PRIMARY KEY was. So a database built from
+     `schema.mssql.sql` alone (e.g. the Docker container) has *no* FK
+     constraints on these 7 tables at all. The two real local example
+     databases are different: they were provisioned from the **full**
+     1,695-table PRIEXPRESS schema before this skill touched them, so they
+     enforce the *real* FK graph — including ~7 lookup/reference tables
+     (`Moedas`, `CondPag`, `Paises`, `Categorias`, `Nacionalidades`,
+     `OutrosTerceiros`, `ContasBancarias`, `RubricasCCT`) that turned out to
+     be **completely empty** (not even standard rows like currency codes).
+     `seed.mssql.ts` leaves every nullable column FK'd to one of those empty
+     lookups as `NULL` rather than backfilling ~7 more system tables — out
+     of scope for "the confirmed 7 tables." The one exception: `Moeda`
+     ended up seeded (a `Moedas` prerequisite with just `EUR`/`USD`) because
+     it's genuinely `NOT NULL` on `Funcionarios` specifically, so a
+     prerequisite was unavoidable there anyway — once it existed, using it
+     on the *nullable* `Moeda` columns elsewhere was free realism, not scope
+     creep.
+   - **Two more columns are `NOT NULL` and FK'd with no existing lookup row
+     at all**: `PlanoContas.Ano` → `ExerciciosCBL`, and
+     `CabecDoc.TipoDoc`/`Serie` → `DocumentosVenda`/`SeriesVendas`
+     (composite). No row can go into either confirmed table without these
+     existing first — this is the one place the seed script reaches outside
+     the 7 confirmed tables, and only because it's structurally required.
+   - **`ExerciciosCBL.Ano` has a genuine circular FK** (`GruposContas` and
+     `ExerciciosCBL` each reference the other's `Ano`) — a real ERP
+     fiscal-year bootstrap problem any actual PRIEXPRESS install resolves
+     through application logic, not raw SQL. Resolved with the standard SQL
+     Server pattern: `ALTER TABLE ... NOCHECK CONSTRAINT` around the
+     bootstrap insert, then `WITH NOCHECK CHECK CONSTRAINT` to re-enable
+     enforcement afterward without retroactively re-validating.
+   - **Live-database `DEFAULT` constraints can silently break an insert on a
+     column you never touch.** `Clientes.Situacao` defaults to `'INACTIVO'`,
+     which itself violates a FK to the (empty) `SituacoesGAB` — omitting the
+     column let that default fire and fail; explicitly inserting `NULL`
+     overrides it. Same for `PlanoContas.Grupo` (defaults to `''`, FK'd to
+     `GruposContas`). Checked directly against `sys.default_constraints` on
+     the live databases, not guessed — worth re-checking there before
+     assuming a column is safe to omit.
+   - Lookup-prerequisite rows use `IF NOT EXISTS` guards, not
+     `DELETE`-then-`INSERT` — a first version used delete-then-reinsert and
+     broke on the very next run once the confirmed tables referenced those
+     rows (the `DELETE` got FK-blocked). Matches this repo's existing
+     `schema.mssql.sql` idempotency convention anyway.
 
 ---
 
@@ -136,13 +270,14 @@ requirements, not suggestions:
 |---|---|
 | `client/` | Unchanged, unless API response shapes change |
 | `server/src/middleware/requireAuth.ts` | Unchanged |
-| `server/src/utils/companyAccess.ts` | Superseded by the tenant connection resolver (Phase 3) — **do not delete until the resolver is live and tested** |
+| `server/src/utils/companyAccess.ts` | Superseded by the tenant connection resolver (Phase 4) — **do not delete until the resolver is live and tested** |
 | `server/db/schema.sql` | Dev/legacy Postgres — no longer fully "stays as-is": the 5 stub tables for removed tabs (Documents, Journal Entries, Journal Lines, Payroll, Third Parties) were dropped from this file (decision 7). `employees`/`invoices` remain as unused leftovers. |
-| `server/db/schema.mssql.sql` | T-SQL port of the *old* 10-table Postgres schema (Phase 1) — **now stale**: still has Documents/Journal Entries/Journal Lines/Payroll/Third Parties and the old table names, not the real PRIEXPRESS names from decision 7. Needs reconciling once real per-tenant column shapes are known — not attempted yet since only table names, not columns, have been provided so far. |
-| `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7); still needs a dialect adapter for T-SQL pagination (`OFFSET`/`FETCH`) and identifiers (`[brackets]`) once Phase 2 lands |
+| `server/db/schema.mssql.sql` | The real PRIEXPRESS DDL for the 7 mapped tables (decision 7), verbatim from a real schema dump — **not** the old app's 10-table Postgres model, and no longer stale. Deliberately excludes `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` (those belong in the Railway metadata Postgres, not a tenant's SQL Server — see decision 4/5). |
+| `server/db/seed.mssql.ts` | New (Phase 2, decision 9) — realistic, disjoint fake data for the 7 confirmed tables, one company profile per run |
+| `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7); still needs a dialect adapter for T-SQL pagination (`OFFSET`/`FETCH`) and identifiers (`[brackets]`) once Phase 3 lands |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
-| `server/src/tenant/connectionResolver.ts` | New (Phase 3) |
-| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 4 / 5) |
+| `server/src/tenant/connectionResolver.ts` | New (Phase 4) |
+| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) |
 | `vanna-service/` | New — separate Python service (Flask/FastAPI wrapping the `vanna` package), its own Railway service |
 
 ---
@@ -151,25 +286,32 @@ requirements, not suggestions:
 
 1. **SQL Server locally, schema-only.** Docker SQL Server next to existing
    Postgres. Port `schema.sql` → `schema.mssql.sql`. No app code changes.
-2. **Swap the DB driver, keep the data-model pattern.** `pg` → `mssql`/
+2. **Seed realistic, disjoint fake data.** `server/db/seed.mssql.ts`, one
+   company profile per run. Needed before Phase 3+ so there's actually
+   something to query/train against — done, see decision 9.
+3. **Swap the DB driver, keep the data-model pattern.** `pg` → `mssql`/
    `tedious`. Small dialect adapter in `financialQueryTools.ts`.
-3. **Per-tenant connection routing.** Replace the single shared pool with a
+4. **Per-tenant connection routing.** Replace the single shared pool with a
    resolver keyed by the JWT's Company ID, backed by the metadata registry.
-4. **Vanna service + read-only guard.** Scaffold the Python service, train on
+5. **Vanna service + read-only guard.** Scaffold the Python service, train on
    the shared schema, wire the guard described above before any real
    execution path exists.
-5. **Metadata Postgres on Railway.** `pgvector`-backed store for Vanna
+6. **Metadata Postgres on Railway.** `pgvector`-backed store for Vanna
    training data, tenant registry, and chat history.
-6. **Deploy + tunnel.** Railway hosting, Tailscale tunnel to a client
+7. **Deploy + tunnel.** Railway hosting, Tailscale tunnel to a client
    network, tested against a real (or staging) on-prem SQL Server.
-7. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
+8. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
    changes; update only if response shapes moved.
 
 ---
 
-## Open questions (resolve before Phase 3)
+## Open questions
 
-- Is it one on-prem SQL Server **instance** per client, or one shared
-  instance with a separate **database** per client (e.g. `DB_Company_123`)?
-  This changes what varies in the connection resolver — host/credentials vs.
-  just a database name.
+None currently open. Both prior questions are resolved:
+
+- _Where `priexpress_schema` comes from_ — a real schema dump at
+  `C:\Primavera tests\priexpress_schema.sql`, provided by the user
+  2026-08-27. See decision 7.
+- _Instance-per-client vs. shared-instance-with-per-client-database_ —
+  shared instance, separate database per client, confirmed against two real
+  local example databases. See decision 8.
