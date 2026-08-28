@@ -53,7 +53,22 @@ merged.
       business logic (`TipoMov`/`TipoEntidade`/`Movim` were hand-typed and
       drifted out of sync) and a UTF-8-encoding bug that had silently
       corrupted every accented character in every table since the first run.
-- [ ] Phase 3 — DB driver swapped behind the data-access layer (`mssql`/`tedious`), dialect adapter for pagination/identifiers
+- [x] Phase 3 — DB driver swapped behind the data-access layer (`mssql`/`tedious`),
+      dialect adapter for pagination/identifiers. `financialData.controller.ts`
+      now queries SQL Server via `server/src/config/mssql.ts`
+      (`getMssqlPool()`), builds a bracket-quoted, allowlisted T-SQL query
+      per table from `financialTables.ts`'s `columns`/`orderBy`, and paginates
+      with `OFFSET`/`FETCH`. **Verified end-to-end** against the real
+      hardcoded target (`MetalurgicaAurora`, see decision 8) with the actual
+      running server: logged in as the demo user, fetched all 7 tabs over
+      HTTP, confirmed real rows with the approved columns, correct
+      `YYYY-MM-DD` date formatting, correct UTF-8 accented text, working
+      `offset`/`limit` pagination, a 404 for an unknown table key, and the
+      existing `userCanAccessCompany` 403 still enforced for a company the
+      demo user isn't linked to. Scoped against **one hardcoded target only**
+      — `companyId` still just gates access, it does not select the
+      database. See decision 10 for the full column/pagination/auth design
+      and the infrastructure fix (TCP/IP) this took to get connectable.
 - [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection string resolver)
 - [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
@@ -129,12 +144,12 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
    dropped — no PRIEXPRESS-derived equivalent is in scope. Their Postgres
    stub tables were also removed from `server/db/schema.sql`.
 
-   **Config is done; execution is not.** `financialData.controller.ts` still
-   queries Postgres via `pg` and does not resolve a per-tenant SQL Server
-   connection — every tab is expected to error or return nothing until
-   Phase 3 (driver swap) and Phase 4 (connection resolver) land. This was a
-   deliberate config-only change, not an oversight; don't "fix" the
-   controller without going through those phases.
+   **Config and execution are both done now (as of Phase 3, decision 10)** —
+   `financialData.controller.ts` queries SQL Server via
+   `server/src/config/mssql.ts`, not Postgres/`pg`. It still does **not**
+   resolve a per-tenant connection, though: every company's requests hit the
+   same single hardcoded target until Phase 4 (connection resolver) lands.
+   Don't vary the connection per company without going through that phase.
 
    **Real column shapes, sourced 2026-08-27.** `server/db/schema.mssql.sql`
    holds the actual `CREATE TABLE` DDL for these 7 tables, extracted
@@ -306,6 +321,85 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
      confirmed **every** `TipoEntidade = 'C'`/`'F'` row in `MovimentosBancos`
      matches a real row in that same company's `Clientes`/`Fornecedores` —
      zero unmatched rows on either database.
+10. **Phase 3 driver swap: column selection, pagination, and auth, as
+    implemented and verified.**
+
+    **Column selection per tab** (`server/src/config/financialTables.ts`).
+    Curated with the user table-by-table against the real 78–249-column
+    PRIEXPRESS DDL — this is a genuine allowlist, not just UX curation:
+    without it a table like `Funcionarios` would leak all 249 columns
+    (medical/identity-document fields included) straight to the client.
+    Columns flagged as ambiguous during proposal and not explicitly
+    requested by the user stay **excluded** (confirmed explicitly — user
+    answered "Yes" to that interpretation), rather than guessed at:
+
+    | Tab | Table | Displayed columns | Order by |
+    |---|---|---|---|
+    | Bank Transactions | `dbo.MovimentosBancos` | `Movim, Descricao, Valor, TipoMov, DtMov, DtValor, Entidade, TipoEntidade, Numero, SerieCheques, BalcaoCheque, Obsv, Estado` | `DtMov, Id` |
+    | Chart of Accounts | `dbo.PlanoContas` | `Conta, Descricao, TipoConta, Natureza, Categoria, Ano, Inactivo` | `Ano, Conta` |
+    | Contracts | `dbo.FAC_CabecContratos` | `Contrato, Descricao, Data, Validade, Referencia, ValorLimite, Moeda, EntidadeFactor, Observacoes, ContaBancaria, Estado` | `Data, Contrato` |
+    | Employees | `dbo.Funcionarios` | `Codigo, Nome, Categoria, Situacao, DataAdmissao, DataDemissao, Vencimento, Email, Telefone, IRSFixo` | `Nome, Codigo` |
+    | Invoices | `dbo.CabecDoc` | `Data, TipoDoc, NumDoc, Serie, TipoEntidade, Entidade, Nome, NumContribuinte, Moeda, TotalMerc, TotalIva, TotalDocumento, DataVencimento, ContratoID, Observacoes` | `Data, NumDoc, Id` |
+    | Clients | `dbo.Clientes` | `Cliente, Nome, NumContrib, Pais, Moeda, CondPag, Situacao, LimiteCred, Vendedor, NomeFiscal, TotalDeb` | `Nome, Cliente` |
+    | Suppliers | `dbo.Fornecedores` | `Fornecedor, Nome, Morada, Local, Cp, Tel, NumContrib, Pais, Moeda, CondPag, LimiteCred` | `Nome, Fornecedor` |
+
+    `orderBy` is not required to be a subset of `columns` — `Id` on
+    `MovimentosBancos`/`CabecDoc` orders for stable pagination but is never
+    displayed (internal PK, hidden from the client same as before).
+
+    **Pagination**: T-SQL `OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+    parameterized (never string-interpolated). Default `limit` 500,
+    `offset` 0, both overridable via `?limit=`/`?offset=` query params
+    (capped at 2000) — the client (`DataTable.tsx`/`FinancialDataPage.tsx`)
+    has no page-control UI yet and still fetches once per tab/company
+    change, so this is a safety net against a real client's table being much
+    larger than dev data, not a shipped pagination feature. Verified the
+    `OFFSET` actually skips rows correctly against real data.
+
+    **Auth / connection layer** (`server/src/config/mssql.ts`): a
+    discriminated `MssqlAuthConfig` (`"sql"` implemented; `"windows-integrated"`
+    typed but throws — deferred, needs the `msnodesqlv8` native driver /
+    node-gyp toolchain, not added) wrapped in an `MssqlTargetConfig`
+    (server/port/database/auth), deliberately not a single connection-string
+    env var like the Phase 1/2 scripts — Phase 4's per-tenant resolver needs
+    to *produce* this shape per Company ID, not just read one static value.
+    `getMssqlPool()` lazily creates and reuses one pooled connection to a
+    **single hardcoded target for now**: `MetalurgicaAurora` on
+    `DESKTOP-I7-1270\SQLEXPRESS`, port `14333` (a static TCP port, newly
+    configured — see below), authenticating as a new least-privilege SQL
+    login `nucase_app` (`db_datareader` role only, not `sa`), configured via
+    `MSSQL_APP_*` env vars in `server/.env` (`server/.env.example` documents
+    them with an empty password). `mssqlPassword` is deliberately **not**
+    read through the `required()` helper other env vars use — this is an
+    experimental, interim single-target setup unset on Railway/production
+    and any other clone of this repo today, so a missing value throws a
+    scoped error only when a Financial Data request actually needs the pool,
+    not at server boot (which would take down auth/chat/everything over a
+    Financial Data implementation detail).
+
+    **`companyId` is still access-control only, not routing** —
+    `userCanAccessCompany()` still gates the request exactly as before, but
+    every company's requests currently hit the same hardcoded SQL Server
+    database. Phase 4 is what makes `companyId` select *which* database gets
+    queried; nothing here should be "fixed" to vary per company before then.
+
+    **Infrastructure blocker hit getting here, for the record**: the local
+    SQLEXPRESS instance had TCP/IP entirely disabled
+    (`SuperSocketNetLib\Tcp\Enabled = 0` in the registry) — `sqlcmd` had
+    always worked because it uses Shared Memory locally, but `tedious`
+    (TCP-only) could never connect regardless of SQL Browser/port config.
+    Fixing this needed a system-level registry write, which Claude Code's
+    sandbox correctly blocked; the user completed the fix manually via SQL
+    Server Configuration Manager (enabled TCP/IP, set the static port
+    `14333`, restarted `MSSQL$SQLEXPRESS`), after which the connection
+    verified immediately. A local Docker SQL Server target was also
+    investigated as an alternative and explicitly **not** chosen — findings
+    kept here in case Docker is revisited later: `docker-compose.yml` never
+    creates its `nucase` database itself (only sets the SA password), and
+    `seed.mssql.ts` can't run against it as-is since its lookup-prerequisite
+    statements (e.g. `ExerciciosCBL`) assume tables that only exist in the
+    full 1,695-table PRIEXPRESS schema the two local SQLEXPRESS databases
+    have, not Docker's narrow 7-table `schema.mssql.sql`.
 
 ---
 
@@ -340,9 +434,11 @@ requirements, not suggestions:
 | `server/db/schema.sql` | Dev/legacy Postgres — no longer fully "stays as-is": the 5 stub tables for removed tabs (Documents, Journal Entries, Journal Lines, Payroll, Third Parties) were dropped from this file (decision 7). `employees`/`invoices` remain as unused leftovers. |
 | `server/db/schema.mssql.sql` | The real PRIEXPRESS DDL for the 7 mapped tables (decision 7), verbatim from a real schema dump — **not** the old app's 10-table Postgres model, and no longer stale. Deliberately excludes `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` (those belong in the Railway metadata Postgres, not a tenant's SQL Server — see decision 4/5). |
 | `server/db/seed.mssql.ts` | New (Phase 2, decision 9) — realistic, disjoint fake data for the 7 confirmed tables, one company profile per run |
-| `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7); still needs a dialect adapter for T-SQL pagination (`OFFSET`/`FETCH`) and identifiers (`[brackets]`) once Phase 3 lands |
+| `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
+| `server/src/config/mssql.ts` | New (Phase 3, decision 10) — `MssqlAuthConfig`/`MssqlTargetConfig` types, `getMssqlPool()`, one hardcoded target for now |
+| `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
-| `server/src/tenant/connectionResolver.ts` | New (Phase 4) |
+| `server/src/tenant/connectionResolver.ts` | New (Phase 4) — not started; `financialData.controller.ts` still targets the one hardcoded Phase 3 connection |
 | `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) |
 | `vanna-service/` | New — separate Python service (Flask/FastAPI wrapping the `vanna` package), its own Railway service |
 
@@ -356,7 +452,8 @@ requirements, not suggestions:
    company profile per run. Needed before Phase 3+ so there's actually
    something to query/train against — done, see decision 9.
 3. **Swap the DB driver, keep the data-model pattern.** `pg` → `mssql`/
-   `tedious`. Small dialect adapter in `financialQueryTools.ts`.
+   `tedious`. Done — see decision 10 for the column/pagination/auth design
+   `financialData.controller.ts` now uses, against one hardcoded target.
 4. **Per-tenant connection routing.** Replace the single shared pool with a
    resolver keyed by the JWT's Company ID, backed by the metadata registry.
 5. **Vanna service + read-only guard.** Scaffold the Python service, train on
