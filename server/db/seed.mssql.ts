@@ -168,13 +168,21 @@ interface InvoiceRow {
   TotalIva: number;
 }
 interface MovimentoRow {
-  Conta: string;
-  Rubrica: string;
   Descricao: string;
+  // Signed here in source data (negative = paid out, positive = received) —
+  // matches how every Descricao is already worded ("pago X" / "recebido X")
+  // so the sign is easy to eyeball against the text. buildMovimentos()
+  // converts to the always-positive stored Valor and *derives* TipoMov from
+  // the sign — Movim and TipoEntidade are derived too (see buildMovimentos)
+  // rather than hand-typed, after the hand-typed versions of exactly these
+  // three fields turned out to be wrong/inconsistent in several rows.
   Valor: number;
   DtMov: string;
+  // Must be a real Cliente or Fornecedor code already seeded for this same
+  // company (checked at generation time — see classifyEntidade), or null
+  // for entity-less internal movements (bank fees, salary runs, rent to a
+  // landlord not tracked as a Cliente/Fornecedor, etc.).
   Entidade: string | null;
-  TipoMov: "C" | "D";
 }
 
 interface CompanyProfile {
@@ -257,26 +265,30 @@ const AURORA: CompanyProfile = {
     { TipoDoc: "FT", NumDoc: 30, Serie: "A", Data: "2025-12-16", TipoEntidade: "C", Entidade: "CL0005", Nome: "Obras Públicas do Norte, S.A.", NumContribuinte: "505678901", TotalMerc: 8748.62, TotalIva: 2012.19 },
   ],
   movimentos: [
-    { Conta: "12345", Rubrica: "RENDA", Descricao: "TRF Predial Costa Filhos Renda 11/2025", Valor: -850, DtMov: "2025-11-28", Entidade: null, TipoMov: "D" },
-    { Conta: "12345", Rubrica: "TELCO", Descricao: "DD MEO EMPRESAS 11/2025", Valor: -132.04, DtMov: "2025-11-28", Entidade: null, TipoMov: "D" },
-    { Conta: "12345", Rubrica: "HONOR", Descricao: "TRF Bright Ideas Honorarios 11/2025", Valor: -450, DtMov: "2025-11-28", Entidade: null, TipoMov: "D" },
-    { Conta: "12345", Rubrica: "SALAR", Descricao: "TRF Salarios 11/2025", Valor: -5103, DtMov: "2025-11-28", Entidade: null, TipoMov: "D" },
-    { Conta: "12345", Rubrica: "EMPRE", Descricao: "DD Banco Montepio Prestacao 11/2025", Valor: -715, DtMov: "2025-11-28", Entidade: null, TipoMov: "D" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Construções Ribeiro & Filhos, Lda", Valor: 7493.18, DtMov: "2025-12-21", Entidade: "CL0001", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Construções Paiva, Lda", Valor: 6437.24, DtMov: "2026-01-02", Entidade: "CL0002", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Metalomecânica Beira Alta, Lda", Valor: 9467.03, DtMov: "2026-01-12", Entidade: "CL0003", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Ferro & Aço do Minho, Lda", Valor: 2947.84, DtMov: "2025-12-05", Entidade: null, TipoMov: "C" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Aços do Norte, Lda", Valor: -1838.86, DtMov: "2025-12-20", Entidade: "FO0001", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Aços do Norte, Lda", Valor: -3301.23, DtMov: "2026-01-10", Entidade: "FO0001", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Aços do Norte, Lda", Valor: -5638.26, DtMov: "2026-01-24", Entidade: "FO0001", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Grupo Estrutura Firme, S.A.", Valor: 10297.01, DtMov: "2026-02-17", Entidade: "CL0004", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Obras Públicas do Norte, S.A.", Valor: 10717.17, DtMov: "2026-01-08", Entidade: "CL0005", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Metalurgia Central, S.A.", Valor: -1372.95, DtMov: "2026-01-22", Entidade: "FO0003", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Distribuidora de Metais Lusitana, Lda", Valor: -2441.27, DtMov: "2026-01-09", Entidade: "FO0004", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Construtora Litoral, Lda", Valor: 4102.15, DtMov: "2026-01-24", Entidade: "CL0006", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Obranorte, S.A.", Valor: 7555.36, DtMov: "2026-03-03", Entidade: "CL0007", TipoMov: "C" },
-    { Conta: "12345", Rubrica: "PAGO", Descricao: "TRF pago Ferragens Ibéricas, Lda", Valor: -1173.91, DtMov: "2026-02-23", Entidade: "FO0005", TipoMov: "D" },
-    { Conta: "12345", Rubrica: "RECEB", Descricao: "TRF recebido Serralharia Vale do Ave, Lda", Valor: 6338.5, DtMov: "2026-04-02", Entidade: null, TipoMov: "C" },
+    { Descricao: "TRF Predial Costa Filhos Renda 11/2025", Valor: -850, DtMov: "2025-11-28", Entidade: null },
+    { Descricao: "DD MEO EMPRESAS 11/2025", Valor: -132.04, DtMov: "2025-11-28", Entidade: null },
+    { Descricao: "TRF Bright Ideas Honorarios 11/2025", Valor: -450, DtMov: "2025-11-28", Entidade: null },
+    { Descricao: "TRF Salarios 11/2025", Valor: -5103, DtMov: "2025-11-28", Entidade: null },
+    { Descricao: "DD Banco Montepio Prestacao 11/2025", Valor: -715, DtMov: "2025-11-28", Entidade: null },
+    { Descricao: "TRF recebido Construções Ribeiro & Filhos, Lda", Valor: 7493.18, DtMov: "2025-12-21", Entidade: "CL0001" },
+    { Descricao: "TRF recebido Construções Paiva, Lda", Valor: 6437.24, DtMov: "2026-01-02", Entidade: "CL0002" },
+    { Descricao: "TRF recebido Metalomecânica Beira Alta, Lda", Valor: 9467.03, DtMov: "2026-01-12", Entidade: "CL0003" },
+    // Entidade fixed: FO0002 exists in this company's own seeded Fornecedores
+    // (Ferro & Aço do Minho) — previously left null despite a real match.
+    { Descricao: "TRF recebido Ferro & Aço do Minho, Lda", Valor: 2947.84, DtMov: "2025-12-05", Entidade: "FO0002" },
+    { Descricao: "TRF pago Aços do Norte, Lda", Valor: -1838.86, DtMov: "2025-12-20", Entidade: "FO0001" },
+    { Descricao: "TRF pago Aços do Norte, Lda", Valor: -3301.23, DtMov: "2026-01-10", Entidade: "FO0001" },
+    { Descricao: "TRF pago Aços do Norte, Lda", Valor: -5638.26, DtMov: "2026-01-24", Entidade: "FO0001" },
+    { Descricao: "TRF recebido Grupo Estrutura Firme, S.A.", Valor: 10297.01, DtMov: "2026-02-17", Entidade: "CL0004" },
+    { Descricao: "TRF recebido Obras Públicas do Norte, S.A.", Valor: 10717.17, DtMov: "2026-01-08", Entidade: "CL0005" },
+    { Descricao: "TRF pago Metalurgia Central, S.A.", Valor: -1372.95, DtMov: "2026-01-22", Entidade: "FO0003" },
+    { Descricao: "TRF pago Distribuidora de Metais Lusitana, Lda", Valor: -2441.27, DtMov: "2026-01-09", Entidade: "FO0004" },
+    { Descricao: "TRF recebido Construtora Litoral, Lda", Valor: 4102.15, DtMov: "2026-01-24", Entidade: "CL0006" },
+    { Descricao: "TRF recebido Obranorte, S.A.", Valor: 7555.36, DtMov: "2026-03-03", Entidade: "CL0007" },
+    { Descricao: "TRF pago Ferragens Ibéricas, Lda", Valor: -1173.91, DtMov: "2026-02-23", Entidade: "FO0005" },
+    // Entidade fixed: FO0006 exists (Serralharia Vale do Ave) — same issue
+    // as the FO0002 row above.
+    { Descricao: "TRF recebido Serralharia Vale do Ave, Lda", Valor: 6338.5, DtMov: "2026-04-02", Entidade: "FO0006" },
   ],
 };
 
@@ -357,25 +369,29 @@ const FLAMECON: CompanyProfile = {
     { TipoDoc: "FC", NumDoc: 205, Serie: "A", Data: "2025-11-25", TipoEntidade: "F", Entidade: "EEL006", Nome: "Espaço Escritório Lisboa, Lda", NumContribuinte: "620222333", TotalMerc: 3200, TotalIva: 736 },
   ],
   movimentos: [
-    { Conta: "98765", Rubrica: "RENDA", Descricao: "TRF Espaco Escritorio Renda 11/2025", Valor: -3200, DtMov: "2025-11-25", Entidade: null, TipoMov: "D" },
-    { Conta: "98765", Rubrica: "TELCO", Descricao: "DD NOS EMPRESAS 11/2025", Valor: -280.81, DtMov: "2025-11-25", Entidade: "NOS005", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SAAS", Descricao: "DD MICROSOFT AZURE 11/2025", Valor: -640, DtMov: "2025-11-25", Entidade: "MSI001", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SAAS", Descricao: "DD SLACK TECHNOLOGIES 11/2025", Valor: -156, DtMov: "2025-11-25", Entidade: "SLK002", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SAAS", Descricao: "DD FIGMA INC 11/2025", Valor: -90, DtMov: "2025-11-25", Entidade: "FIG003", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SAAS", Descricao: "DD GITHUB TEAM 11/2025", Valor: -248, DtMov: "2025-11-25", Entidade: "GHB004", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SALAR", Descricao: "TRF Salarios 11/2025", Valor: -58927.5, DtMov: "2025-11-25", Entidade: null, TipoMov: "D" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido Banco Atlântico Digital, S.A.", Valor: 34440, DtMov: "2025-11-20", Entidade: "BAD001", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido Rede Saúde Plus, S.A.", Valor: 24600, DtMov: "2025-11-20", Entidade: "RSP002", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido LogiTrack Iberia, Lda", Valor: 4305, DtMov: "2025-11-20", Entidade: "LTI003", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido EduSpark Platforms, S.A.", Valor: 3075, DtMov: "2025-11-20", Entidade: "ESP004", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido Verde Energia Apps, Lda", Valor: 2460, DtMov: "2025-11-20", Entidade: "VEA005", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido PixelForge Studio, Lda", Valor: 4305, DtMov: "2025-11-18", Entidade: "PXF006", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido ShopCraft eCommerce, Lda", Valor: 4790.31, DtMov: "2025-12-25", Entidade: "SCE009", TipoMov: "C" },
-    { Conta: "98765", Rubrica: "RENDA", Descricao: "TRF Espaco Escritorio Renda 12/2025", Valor: -3200, DtMov: "2025-12-25", Entidade: null, TipoMov: "D" },
-    { Conta: "98765", Rubrica: "TELCO", Descricao: "DD NOS EMPRESAS 12/2025", Valor: -291.41, DtMov: "2025-12-25", Entidade: "NOS005", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SAAS", Descricao: "DD MICROSOFT AZURE 12/2025", Valor: -640, DtMov: "2025-12-25", Entidade: "MSI001", TipoMov: "D" },
-    { Conta: "98765", Rubrica: "SALAR", Descricao: "TRF Salarios 12/2025", Valor: -58927.5, DtMov: "2025-12-25", Entidade: null, TipoMov: "D" },
-    { Conta: "98765", Rubrica: "RECEB", Descricao: "TRF recebido Banco Atlântico Digital, S.A.", Valor: 34440, DtMov: "2025-12-20", Entidade: "BAD001", TipoMov: "C" },
+    { Descricao: "TRF Espaco Escritorio Renda 11/2025", Valor: -3200, DtMov: "2025-11-25", Entidade: "EEL006" },
+    { Descricao: "DD NOS EMPRESAS 11/2025", Valor: -280.81, DtMov: "2025-11-25", Entidade: "NOS005" },
+    { Descricao: "DD MICROSOFT AZURE 11/2025", Valor: -640, DtMov: "2025-11-25", Entidade: "MSI001" },
+    { Descricao: "DD SLACK TECHNOLOGIES 11/2025", Valor: -156, DtMov: "2025-11-25", Entidade: "SLK002" },
+    { Descricao: "DD FIGMA INC 11/2025", Valor: -90, DtMov: "2025-11-25", Entidade: "FIG003" },
+    { Descricao: "DD GITHUB TEAM 11/2025", Valor: -248, DtMov: "2025-11-25", Entidade: "GHB004" },
+    { Descricao: "TRF Salarios 11/2025", Valor: -58927.5, DtMov: "2025-11-25", Entidade: null },
+    { Descricao: "TRF recebido Banco Atlântico Digital, S.A.", Valor: 34440, DtMov: "2025-11-20", Entidade: "BAD001" },
+    { Descricao: "TRF recebido Rede Saúde Plus, S.A.", Valor: 24600, DtMov: "2025-11-20", Entidade: "RSP002" },
+    { Descricao: "TRF recebido LogiTrack Iberia, Lda", Valor: 4305, DtMov: "2025-11-20", Entidade: "LTI003" },
+    { Descricao: "TRF recebido EduSpark Platforms, S.A.", Valor: 3075, DtMov: "2025-11-20", Entidade: "ESP004" },
+    { Descricao: "TRF recebido Verde Energia Apps, Lda", Valor: 2460, DtMov: "2025-11-20", Entidade: "VEA005" },
+    { Descricao: "TRF recebido PixelForge Studio, Lda", Valor: 4305, DtMov: "2025-11-18", Entidade: "PXF006" },
+    { Descricao: "TRF recebido ShopCraft eCommerce, Lda", Valor: 4790.31, DtMov: "2025-12-25", Entidade: "SCE009" },
+    // Entidade fixed: EEL006 exists (Espaço Escritório Lisboa) — the landlord
+    // named in this description IS a seeded Fornecedor, unlike the Aurora
+    // rent row above (a different, unseeded landlord) — previously left null
+    // here too even though a real match exists.
+    { Descricao: "TRF Espaco Escritorio Renda 12/2025", Valor: -3200, DtMov: "2025-12-25", Entidade: "EEL006" },
+    { Descricao: "DD NOS EMPRESAS 12/2025", Valor: -291.41, DtMov: "2025-12-25", Entidade: "NOS005" },
+    { Descricao: "DD MICROSOFT AZURE 12/2025", Valor: -640, DtMov: "2025-12-25", Entidade: "MSI001" },
+    { Descricao: "TRF Salarios 12/2025", Valor: -58927.5, DtMov: "2025-12-25", Entidade: null },
+    { Descricao: "TRF recebido Banco Atlântico Digital, S.A.", Valor: 34440, DtMov: "2025-12-20", Entidade: "BAD001" },
   ],
 };
 
@@ -457,12 +473,56 @@ function buildInvoices(rows: InvoiceRow[]): { columns: string[]; values: SqlValu
   return { columns, values };
 }
 
-function buildMovimentos(rows: MovimentoRow[]): { columns: string[]; values: SqlValue[][] } {
-  const columns = ["Id", "Descricao", "Valor", "DtMov", "DtValor", "Entidade", "TipoEntidade", "TipoMov", "SerieOriginal", "Numero", "Utilizador", "ReconciliadoPorExtracto", "CambioMBase", "CambioMAlt", "CustoBancario", "CobrarCusto"];
-  const values = rows.map((r, i): SqlValue[] => [
-    randomUUID(), r.Descricao, r.Valor, r.DtMov, r.DtMov, r.Entidade, r.Entidade ? "C" : null, r.TipoMov,
-    "A", String(i + 1), "seed", true, 1, 1, false, false,
-  ]);
+// Movim (transaction type — TRF/DD/CHQ/DEP/LEV/COM) is genuinely FK'd to
+// dbo.DocumentosBancos (confirmed against sys.foreign_keys on the live
+// database, not assumed) — buildLookupPrerequisites() seeds the valid code
+// set there. Derived from the Descricao prefix rather than hand-typed per
+// row, since every Descricao already reads "TRF ..." or "DD ..." — matching
+// the narrative text is more reliable than a parallel hand-typed field that
+// can silently drift from it. Throws on an unrecognized prefix rather than
+// guessing, so a future row using a different wording is caught at
+// generation time instead of silently seeding a Movim that doesn't match
+// its own description.
+function deriveMovim(descricao: string): string {
+  if (descricao.startsWith("TRF ")) return "TRF";
+  if (descricao.startsWith("DD ")) return "DD";
+  throw new Error(`Cannot derive Movim (transaction type) from description: "${descricao}"`);
+}
+
+// TipoEntidade ('C' Cliente / 'F' Fornecedor / null) is derived from which
+// of this specific company's own seeded code sets Entidade actually belongs
+// to — never hand-typed, and never guessed: an Entidade that matches
+// neither is a real bug (a code from the other company, or one that was
+// never seeded at all) and throws immediately rather than silently seeding
+// a dangling reference. 'O' (Outros Terceiros) and 'B' (Bancos) are real
+// PRIEXPRESS categories but aren't produced here — this seed data has no
+// backing OutrosTerceiros/ContasBancarias rows to point them at (both are
+// empty lookup tables, same situation as decision 9's Moedas/CondPag/etc.),
+// so an entity-less movement is just left at TipoEntidade/Entidade = null
+// rather than asserting a category with nothing real behind it.
+function classifyEntidade(entidade: string | null, clienteCodes: Set<string>, fornecedorCodes: Set<string>): "C" | "F" | null {
+  if (entidade === null) return null;
+  if (clienteCodes.has(entidade)) return "C";
+  if (fornecedorCodes.has(entidade)) return "F";
+  throw new Error(`Entidade "${entidade}" matches neither this company's seeded Clientes nor Fornecedores`);
+}
+
+function buildMovimentos(rows: MovimentoRow[], clienteCodes: Set<string>, fornecedorCodes: Set<string>): { columns: string[]; values: SqlValue[][] } {
+  const columns = ["Id", "Movim", "Descricao", "Valor", "DtMov", "DtValor", "Entidade", "TipoEntidade", "TipoMov", "SerieOriginal", "Numero", "Utilizador", "ReconciliadoPorExtracto", "CambioMBase", "CambioMAlt", "CustoBancario", "CobrarCusto"];
+  const values = rows.map((r, i): SqlValue[] => {
+    // Business rule (confirmed with the user, not the more common banking
+    // convention — this system's TipoMov is bookkeeping-perspective, not
+    // statement-perspective): D (Débito) = money in, C (Crédito) = money
+    // out. Source Valor is signed (negative = paid out, positive =
+    // received); derived here rather than hand-typed, which is what let
+    // TipoMov drift out of sync with the actual amounts before.
+    const tipoMov: "C" | "D" = r.Valor < 0 ? "C" : "D";
+    return [
+      randomUUID(), deriveMovim(r.Descricao), r.Descricao, Math.abs(r.Valor), r.DtMov, r.DtMov, r.Entidade,
+      classifyEntidade(r.Entidade, clienteCodes, fornecedorCodes), tipoMov,
+      "A", String(i + 1), "seed", true, 1, 1, false, false,
+    ];
+  });
   return { columns, values };
 }
 
@@ -549,6 +609,25 @@ function buildLookupPrerequisites(): string[] {
   ]);
   statements.push(...guardedInsert("SeriesVendas", "TipoDoc = 'FT' AND Serie = 'A'", seriesCols, seriesRows));
 
+  // MovimentosBancos.Movim is genuinely FK'd to DocumentosBancos.Movim, and
+  // DocumentosBancos is empty here too. Unlike the empty-lookup columns left
+  // NULL elsewhere (Pais, CondPag, ...), Movim is realism-critical for a
+  // "bank transactions" table specifically, so this seeds the real
+  // PRIEXPRESS transaction-type code set rather than leaving it NULL. Only
+  // TRF and DD actually appear in the seeded MovimentosBancos rows (that's
+  // what the narrative descriptions call for), but the fuller code set is
+  // seeded anyway so future rows aren't blocked rediscovering this.
+  const docBancosCols = ["Movim", "Descricao", "PermiteAltAposExp", "Letra", "ChequePreDatado", "Recibo", "ExportaN68", "ControlarValorAdicional"];
+  const docBancosRows = namedRows(docBancosCols, [
+    { Movim: "TRF", Descricao: "Transferência Bancária" },
+    { Movim: "DD", Descricao: "Débito Direto" },
+    { Movim: "CHQ", Descricao: "Cheque" },
+    { Movim: "DEP", Descricao: "Depósito" },
+    { Movim: "LEV", Descricao: "Levantamento" },
+    { Movim: "COM", Descricao: "Comissão Bancária" },
+  ]);
+  statements.push(...guardedInsert("DocumentosBancos", "Movim = 'TRF'", docBancosCols, docBancosRows));
+
   return statements;
 }
 
@@ -558,6 +637,8 @@ function buildLookupPrerequisites(): string[] {
 
 function buildProfileSql(profile: CompanyProfile): string {
   const order = topoSort(TABLE_DEFS);
+  const clienteCodes = new Set(profile.clientes.map((c) => c.Cliente));
+  const fornecedorCodes = new Set(profile.fornecedores.map((f) => f.Fornecedor));
   const builders: Record<string, () => { columns: string[]; values: SqlValue[][] }> = {
     PlanoContas: () => buildPlanoContas(profile.planoContas),
     Clientes: () => buildClientes(profile.clientes),
@@ -565,7 +646,7 @@ function buildProfileSql(profile: CompanyProfile): string {
     Funcionarios: () => buildFuncionarios(profile.funcionarios),
     FAC_CabecContratos: () => buildContratos(profile.contratos),
     CabecDoc: () => buildInvoices(profile.invoices),
-    MovimentosBancos: () => buildMovimentos(profile.movimentos),
+    MovimentosBancos: () => buildMovimentos(profile.movimentos, clienteCodes, fornecedorCodes),
   };
 
   const statements: string[] = [
@@ -596,8 +677,15 @@ async function main() {
   const profile = companyArg === "aurora" ? AURORA : FLAMECON;
   const generatedSql = buildProfileSql(profile);
 
+  // Prepend a UTF-8 BOM: without it, `sqlcmd -i` on Windows has no signal to
+  // read the file as UTF-8 and falls back to the local ANSI codepage,
+  // silently corrupting every accented character (found the hard way — see
+  // SKILL.md decision 9's follow-up). The mssql-driver path below is
+  // unaffected either way since it sends the string in memory, never
+  // through this file.
+  const UTF8_BOM = String.fromCharCode(0xfeff);
   const outPath = path.join(__dirname, `seed.mssql.${profile.key}.generated.sql`);
-  writeFileSync(outPath, generatedSql, "utf-8");
+  writeFileSync(outPath, UTF8_BOM + generatedSql, "utf-8");
   console.log(`Wrote ${outPath}`);
 
   const connectionString = process.env.MSSQL_CONNECTION_STRING;

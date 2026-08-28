@@ -48,7 +48,11 @@ merged.
       confirmed zero client-name overlap between the two datasets. See
       decision 9 for what this actually took (it wasn't just "generate rows"
       — real FK/lookup-table and circular-reference problems came up and are
-      documented there so Phase 4/5 don't rediscover them from scratch).
+      documented there so Phase 4/5 don't rediscover them from scratch) —
+      including a 2026-08-28 follow-up fixing wrong `MovimentosBancos`
+      business logic (`TipoMov`/`TipoEntidade`/`Movim` were hand-typed and
+      drifted out of sync) and a UTF-8-encoding bug that had silently
+      corrupted every accented character in every table since the first run.
 - [ ] Phase 3 — DB driver swapped behind the data-access layer (`mssql`/`tedious`), dialect adapter for pagination/identifiers
 - [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection string resolver)
 - [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
@@ -240,6 +244,68 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
      broke on the very next run once the confirmed tables referenced those
      rows (the `DELETE` got FK-blocked). Matches this repo's existing
      `schema.mssql.sql` idempotency convention anyway.
+
+   **Follow-up (2026-08-28): the first `MovimentosBancos` rows were wrong,
+   and one bug affected every table's text.** Caught by the user, not
+   self-caught — worth reading before touching any table's business-logic
+   columns again, not just `MovimentosBancos`.
+   - `TipoMov`, `TipoEntidade`, and `Movim` were **hand-typed** per row
+     alongside `Entidade`/`Valor`, and drifted out of sync with them:
+     `TipoEntidade` was derived as "`Entidade` set → `'C'`" — wrong whenever
+     `Entidade` was actually a Fornecedor code (`FO0001`, `MSI001`, ...), and
+     `Movim` was never populated at all. Two Aurora rows and one FlameCon row
+     also had `Entidade: null` despite a real, already-seeded Cliente/
+     Fornecedor code matching the counterparty named right there in
+     `Descricao` (`FO0002`, `FO0006`, `EEL006`) — a plain missed cross-check
+     against the company's own seeded data, not a lookup-table problem.
+     **Fixed by making all three *derived*, not hand-typed**: `TipoMov` from
+     the sign of a (now source-only) signed `Valor` — this system's rule is
+     `D` (Débito) = money in, `C` (Crédito) = money out, confirmed with the
+     user (the reverse of ordinary bank-statement wording, since it's
+     bookkeeping-perspective) — `TipoEntidade` from which of the company's
+     own `clienteCodes`/`fornecedorCodes` sets `Entidade` actually belongs to
+     (throws at generation time on a code matching neither, instead of
+     silently seeding a dangling reference), and `Movim` from the
+     `Descricao` prefix (`"TRF "` / `"DD "`, throws on anything else). Stored
+     `Valor` is now always positive. `'O'`/`'B'` (Outros Terceiros/Bancos)
+     are real `TipoEntidade` categories the schema supports but aren't
+     produced here — no seeded `OutrosTerceiros`/`ContasBancarias` rows back
+     them, so entity-less movements are just `NULL`/`NULL` rather than
+     asserting a category with nothing real behind it.
+   - Per the user's request, checked `sys.foreign_keys`/
+     `sys.check_constraints` on the live database *before* changing
+     anything: only `Movim` (→ `DocumentosBancos`) is DB-enforced.
+     `TipoMov`/`TipoEntidade`/`Entidade`/`Valor`'s sign are pure business
+     logic with **zero** DB-level guarantee — nothing stops a future
+     hand-typed row from being inconsistent again; only application-level
+     (or, here, generation-time) discipline does.
+   - `Movim` turned out genuinely FK'd (to `DocumentosBancos`, itself empty
+     here) — same empty-lookup-table situation as `Moedas`/`CondPag`/etc.,
+     but seeded anyway (`TRF`/`DD`/`CHQ`/`DEP`/`LEV`/`COM`) rather than left
+     `NULL`, since transaction type is realism-critical for a bank
+     transactions table specifically. Only `TRF`/`DD` actually appear in the
+     seeded rows (matches the narrative text); the rest exist so future rows
+     aren't blocked rediscovering this.
+   - **Separately, and much bigger: every accented character in every
+     table's seed data was silently corrupted** (`"Construções"` stored as
+     `"ConstruÃ§Ãµes"` — classic UTF-8-read-as-Latin-1 mojibake, confirmed via
+     `UNICODE(SUBSTRING(...))` server-side, not just a terminal-rendering
+     guess). Root cause: `seed.mssql.ts` wrote its generated `.sql` file via
+     plain `writeFileSync(..., "utf-8")`, and `sqlcmd -i` on Windows has no
+     way to know a file is UTF-8 without a byte-order mark — it fell back to
+     the local ANSI codepage. Fixed by prepending a UTF-8 BOM
+     (`String.fromCharCode(0xfeff)`) to the written file. This was present
+     from the very first seed run, on every table, not something this
+     `MovimentosBancos` fix introduced — `schema.mssql.sql` never showed it
+     only because it has no non-ASCII text to corrupt. Re-ran both company
+     seeds after the fix, confirmed via the same `UNICODE()` check.
+   - Re-verified end-to-end after all of the above: zero DB errors on both
+     companies, confirmed idempotent (re-run twice), confirmed zero name
+     overlap between the two datasets (`Clientes` and `Fornecedores`, both
+     re-checked with corrected encoding), and a join-based spot check
+     confirmed **every** `TipoEntidade = 'C'`/`'F'` row in `MovimentosBancos`
+     matches a real row in that same company's `Clientes`/`Fornecedores` —
+     zero unmatched rows on either database.
 
 ---
 
