@@ -7,6 +7,11 @@
 // as its own request: `GO` isn't valid T-SQL, it's a batch separator that
 // only SQLCMD/SSMS understand, and conditional DDL blocks
 // (IF ... BEGIN CREATE TABLE ... END) are clearer kept as separate batches.
+//
+// SCHEMA_FILE overrides which file in this directory gets applied — defaults
+// to schema.mssql.sql (the Docker/default path, untouched), so pass e.g.
+// SCHEMA_FILE=schema.mssql.azure.sql to apply the Azure demo variant (see
+// .claude/skills/railway-vanna-migration/SKILL.md, decision 11) instead.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -24,7 +29,8 @@ const DEFAULT_CONNECTION_STRING =
 async function main() {
   const connectionString = process.env.MSSQL_CONNECTION_STRING ?? DEFAULT_CONNECTION_STRING;
 
-  const fullScript = readFileSync(path.join(__dirname, "schema.mssql.sql"), "utf-8");
+  const schemaFile = process.env.SCHEMA_FILE ?? "schema.mssql.sql";
+  const fullScript = readFileSync(path.join(__dirname, schemaFile), "utf-8");
   const batches = fullScript
     .split(/^\s*GO\s*$/im)
     .map((batch) => batch.trim())
@@ -35,7 +41,7 @@ async function main() {
     for (const batch of batches) {
       await pool.request().batch(batch);
     }
-    console.log(`Schema applied successfully (${batches.length} batches).`);
+    console.log(`Schema applied successfully from ${schemaFile} (${batches.length} batches).`);
   } finally {
     await pool.close();
   }

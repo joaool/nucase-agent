@@ -401,6 +401,95 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
     full 1,695-table PRIEXPRESS schema the two local SQLEXPRESS databases
     have, not Docker's narrow 7-table `schema.mssql.sql`.
 
+    **Addendum, decision 11**: the hardcoded target above (`DESKTOP-I7-1270\SQLEXPRESS`)
+    is still correct for **local dev** (`server/.env`'s defaults are unchanged), but
+    **Railway's `migration` environment's `MSSQL_APP_*` variables were repointed at the
+    Azure SQL Database demo target** described in decision 11 below, so
+    `MssqlTargetConfig.encrypt`/`trustServerCertificate` are also exercised for real now,
+    not just typed. Local dev and the deployed demo intentionally point at two different
+    SQL Server targets today — don't assume they're in sync.
+11. **Azure SQL Database demo target, and a real-FK schema variant to seed it against.**
+    Provisioned for an upcoming customer demo presented from a MacBook, independent of
+    the developer's Windows machine — see decision 10's TCP/IP story for why "just point
+    at the Windows machine" wasn't viable for a live demo (also needs the machine to stay
+    awake/reachable, which a laptop-hosted demo can't guarantee).
+
+    - **Server**: `nucase-demo-sql-v2.database.windows.net` (Azure SQL Database, region
+      Germany West Central), SQL authentication, admin login `nucaseadmin`.
+    - **Databases**: `MetalurgicaAurora` and `FlameConSolutions` — same two names as the
+      local SQLEXPRESS example databases (decision 8), each free-tier serverless (auto-pauses
+      when idle; first query after a while can take ~30-60s to resume — size any demo-day
+      connection timeout accordingly, and do one warm-up query a minute before presenting).
+    - **Purpose: demo only, not the long-term production target.** The target architecture
+      (see that section above) is unchanged — real clients' data still lives on their own
+      on-premise SQL Server, reached via a Tailscale tunnel (Phase 8). Azure SQL Database
+      here is a convenience stand-in so a demo doesn't depend on any one person's machine
+      being online, nothing more.
+    - **Why Azure specifically, not Railway hosting its own SQL Server container**:
+      Railway's own container runtime cannot run the SQL Server Docker image at all —
+      confirmed by trying both the `2025-latest` and `2022-latest` tags, both failing
+      identically with `/opt/mssql/bin/sqlservr: Error: The system directory [/.system]
+      could not be created ... Permission denied` on every container start. This matches a
+      known class of issue (`microsoft/mssql-docker#735`) where SQL Server's non-root
+      startup needs filesystem operations that sandboxed/restricted container runtimes
+      (the kind multi-tenant PaaS platforms use) don't support — not something fixed by
+      picking a different tag or adjusting Railway volume permissions (other reports show
+      even correct UID/GID matching didn't resolve it elsewhere either). The broken Railway
+      service was deleted rather than left crash-looping.
+    - **`server/db/schema.mssql.azure.sql` (new)**: `schema.mssql.sql`'s 7 confirmed tables
+      verbatim, plus the minimal lookup tables from decision 9's list (`Moedas`, `Paises`,
+      `CondPag`, `Categorias`, `Nacionalidades`, `OutrosTerceiros`, `ContasBancarias`,
+      `RubricasCCT`, `ExerciciosCBL`, `GruposContas`, `DocumentosVenda`, `SeriesVendas`) —
+      plus `DocumentosBancos` and `ExerciciosERP`, both structurally required by FKs decision
+      9 documents but not named in that list's headline sentence — plus the real FK
+      constraints connecting the 7 confirmed tables to those lookups, plus the same
+      lookup-prerequisite bootstrap rows `seed.mssql.ts`'s `buildLookupPrerequisites()`
+      already inserts (EUR/USD in `Moedas`, the `ExerciciosCBL`/`GruposContas`/
+      `ExerciciosERP` circular-FK bootstrap via the same `NOCHECK CONSTRAINT` /
+      `WITH NOCHECK CHECK CONSTRAINT` dance, `FT`/`FC` in `DocumentosVenda`, `FT`/`A` and
+      `FC`/`A` in `SeriesVendas`, the transaction-type code set in `DocumentosBancos`) — a
+      literal transcription of that function's output, not a reinvention; if
+      `buildLookupPrerequisites()` changes, mirror the change here by hand (one's
+      TypeScript, one's static SQL — no shared code path between them). Same `IF NOT
+      EXISTS`/`IF OBJECT_ID` idempotency convention throughout. Deliberately **not full
+      PRIEXPRESS fidelity** — the 8 lookup tables nothing ever populates (`Paises`,
+      `CondPag`, `Categorias`, `Nacionalidades`, `OutrosTerceiros`, `ContasBancarias`,
+      `RubricasCCT`, `ExerciciosERP`) are single/composite-PK shells with types inferred
+      from the referencing column, not sourced from real DDL — decision 9 already confirms
+      these are completely empty on the real live databases too, and `seed.mssql.ts` never
+      gives their referencing columns a value, so a shell is genuinely all the FK
+      constraint needs to be valid.
+    - **`server/db/migrate.mssql.ts`**: gained a `SCHEMA_FILE` env var (defaults to
+      `schema.mssql.sql`, so the existing Docker/default path is byte-for-byte unchanged) so
+      `schema.mssql.azure.sql` has a real way to be applied:
+      `SCHEMA_FILE=schema.mssql.azure.sql MSSQL_CONNECTION_STRING=... npx tsx
+      db/migrate.mssql.ts`.
+    - **`server/db/seed.mssql.ts`**: gained a `--target=full|docker` flag (see the header
+      comment there) — `full` (the default, matching existing behavior) includes
+      `buildLookupPrerequisites()`'s bootstrap rows; `docker` skips them, since a database
+      built from `schema.mssql.sql` alone (Docker, or these 7 tables applied any other way
+      without `schema.mssql.azure.sql`) has zero FK constraints on them at all (decision 9)
+      — those 5 tables don't even exist there, so trying to insert into them fails outright
+      rather than just being unnecessary.
+    - **Verified end-to-end**: applied `schema.mssql.azure.sql` to both Azure databases via
+      the real `mssql` driver (53 batches each, zero errors) — including against databases
+      **already seeded** via `--target=docker` (the first pass, before this schema variant
+      existed): the `WITH CHECK ADD CONSTRAINT` validation against already-present data
+      passed cleanly on every FK, since the bootstrapped `2026`/`FT`/`FC`/`A`/`EUR` values
+      match what `seed.mssql.ts` had already written. Re-ran `seed.mssql.ts --target=full`
+      against both afterward — a clean, idempotent no-op on top (`IF NOT EXISTS` guards
+      everywhere) — and confirmed row counts unchanged (Aurora: 20/20/4/5/12/7/6 across the
+      7 tables; FlameCon: 19/20/10/5/12/9/6) with 26 real FK constraints now active on each
+      database (`sys.foreign_keys` count), where Phase 3's first pass had zero.
+    - **Railway wiring is a separate step, already done in practice** — `MSSQL_APP_*` on
+      Railway's `migration` environment already points at `nucase-demo-sql-v2.database.windows.net`
+      / `MetalurgicaAurora` (set while diagnosing why the deployed URL showed no Financial
+      Data — see Phase 3 status). That predates `schema.mssql.azure.sql` existing, so the
+      live demo target was seeded via `--target=docker` (no FK enforcement) until the
+      `migrate.mssql.ts`/`seed.mssql.ts --target=full` runs above upgraded it in place — no
+      further Railway variable change was needed for this decision, since the database
+      identity (server/database name) didn't change, only its schema did.
+
 ---
 
 ## Non-negotiable guardrails
@@ -432,8 +521,10 @@ requirements, not suggestions:
 | `server/src/middleware/requireAuth.ts` | Unchanged |
 | `server/src/utils/companyAccess.ts` | Superseded by the tenant connection resolver (Phase 4) — **do not delete until the resolver is live and tested** |
 | `server/db/schema.sql` | Dev/legacy Postgres — no longer fully "stays as-is": the 5 stub tables for removed tabs (Documents, Journal Entries, Journal Lines, Payroll, Third Parties) were dropped from this file (decision 7). `employees`/`invoices` remain as unused leftovers. |
-| `server/db/schema.mssql.sql` | The real PRIEXPRESS DDL for the 7 mapped tables (decision 7), verbatim from a real schema dump — **not** the old app's 10-table Postgres model, and no longer stale. Deliberately excludes `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` (those belong in the Railway metadata Postgres, not a tenant's SQL Server — see decision 4/5). |
-| `server/db/seed.mssql.ts` | New (Phase 2, decision 9) — realistic, disjoint fake data for the 7 confirmed tables, one company profile per run |
+| `server/db/schema.mssql.sql` | The real PRIEXPRESS DDL for the 7 mapped tables (decision 7), verbatim from a real schema dump — **not** the old app's 10-table Postgres model, and no longer stale. Deliberately excludes `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` (those belong in the Railway metadata Postgres, not a tenant's SQL Server — see decision 4/5). Unchanged by decision 11 — still what the Docker path applies. |
+| `server/db/schema.mssql.azure.sql` | New (decision 11) — `schema.mssql.sql`'s 7 tables plus the minimal lookup tables, real FK constraints, and bootstrap rows needed to run `seed.mssql.ts --target=full` against a genuinely empty database (e.g. Azure SQL Database) — done, verified |
+| `server/db/migrate.mssql.ts` | Gained `SCHEMA_FILE` env var (decision 11), defaulting to `schema.mssql.sql` — the Docker/default path is unchanged |
+| `server/db/seed.mssql.ts` | New (Phase 2, decision 9) — realistic, disjoint fake data for the 7 confirmed tables, one company profile per run. Gained `--target=full\|docker` (decision 11) |
 | `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
 | `server/src/config/mssql.ts` | New (Phase 3, decision 10) — `MssqlAuthConfig`/`MssqlTargetConfig` types, `getMssqlPool()`, one hardcoded target for now |
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
