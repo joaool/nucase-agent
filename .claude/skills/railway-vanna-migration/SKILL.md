@@ -69,7 +69,10 @@ merged.
       — `companyId` still just gates access, it does not select the
       database. See decision 10 for the full column/pagination/auth design
       and the infrastructure fix (TCP/IP) this took to get connectable.
-- [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection string resolver)
+- [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection
+      string resolver). Registry location decided (decision 5's amendment):
+      a new table on the **existing** Railway Postgres, not a second Postgres
+      service.
 - [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
 - [ ] Phase 7 — Metadata Postgres (pgvector) stood up on Railway for Vanna training data + tenant registry + chat history
@@ -123,6 +126,27 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
    `pgvector` for Vanna's training/vector store) — holding Vanna's training
    data, the tenant connection registry, and `chat_threads` /
    `chat_messages`. Client financial data **never** touches this database.
+
+   **Amendment (Phase 4 planning, decided explicitly — not a silent
+   reinterpretation):** "its own small Railway-hosted Postgres" is now the
+   **existing** Railway Postgres service — the one already holding
+   `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` — not
+   a second, separate Postgres service. Phase 4's tenant connection registry
+   (Company ID → SQL Server connection config) is a new table added there.
+   When Phase 6 later adds Vanna's `pgvector` training/vector store to this
+   same database, **Vanna's own Postgres login must be scoped via table-level
+   `GRANT`/`REVOKE`** to only its own training tables — explicitly excluding
+   the tenant connection registry and the `users`/`companies`/`user_companies`
+   tables. This is what actually preserves the security property this
+   decision exists for: Vanna never has a path to real per-client connection
+   credentials, enforced at the database level (Vanna's login literally
+   cannot `SELECT` the registry table), not just by app-level discipline —
+   the same category of defense-in-depth already required for SQL Server
+   execution in the guardrails section below ("DB-level read-only login, not
+   just an app-level check"). Whether Vanna's tables also live in a separate
+   Postgres *schema* (e.g. `vanna` vs `public`) for clarity is a Phase 6
+   implementation detail, not decided here — table-level grants achieve the
+   isolation either way.
 6. **Staying on Express, not migrating to NestJS**, unless a separate
    explicit decision changes this. The architecture diagram's "Node.js /
    Nest.js" was presented as either/or, not a requirement.
@@ -508,6 +532,11 @@ requirements, not suggestions:
 - **Vanna never receives `company_id`** or any tenant-identifying value
   beyond what's needed to pick a connection. Tenant identity selects *which*
   database Vanna's generated SQL runs against; it is never a filter value.
+- **Vanna's own Postgres login must be table-level `GRANT`-restricted to only
+  its training/vector tables** once Phase 6 adds them to the existing Railway
+  Postgres (decision 5's amendment) — it must not be able to `SELECT` the
+  Phase 4 tenant connection registry or the `users`/`companies`/
+  `user_companies` tables, even though they live in the same database.
 - **Financial data rows never touch the Railway metadata Postgres.** Only
   schema/training/text metadata belongs there.
 
