@@ -1,14 +1,16 @@
 ---
 name: railway-vanna-migration
-description: Use this skill for ANY work on migrating this app from Postgres/Express to the Railway + Vanna + on-premise SQL Server architecture — this includes touching server/db (schema, migrations), server/src/agent (SQL generation, tool-calling), server/src/config/financialTables.ts, anything related to Vanna, tenant/company connection routing, SQL Server dialect handling, or Railway/Tailscale deployment config. Always consult this skill before writing or modifying code in those areas, even if the user's request seems small or unrelated to "the migration" by name — e.g. "add a column to bank_transactions" or "fix pagination on the financial tab" still touches the dual-dialect surface this skill governs. Also use this skill to check current migration status before suggesting next steps, and to update the status checklist after completing a phase.
+description: Use this skill for ANY work on migrating this app from Postgres/Express to the Railway + Vanna + Azure SQL Database architecture — this includes touching server/db (schema, migrations), server/src/agent (SQL generation, tool-calling), server/src/config/financialTables.ts, anything related to Vanna, tenant/company connection routing, SQL Server dialect handling, or Railway deployment config. Always consult this skill before writing or modifying code in those areas, even if the user's request seems small or unrelated to "the migration" by name — e.g. "add a column to bank_transactions" or "fix pagination on the financial tab" still touches the dual-dialect surface this skill governs. Also use this skill to check current migration status before suggesting next steps, and to update the status checklist after completing a phase.
 ---
 
 # Railway + Vanna Migration
 
 This skill tracks the in-progress migration of this app from a single-Postgres,
 tool-calling-agent architecture to a hybrid architecture: Railway-hosted
-orchestration + Vanna-generated SQL, executed read-only against each client's
-own on-premise SQL Server.
+orchestration + Vanna-generated SQL, executed read-only against each tenant's
+own Azure SQL Database (decision 12 — confirmed production target, superseding
+the original on-premise-SQL-Server-plus-Tailscale-tunnel plan this paragraph
+used to describe).
 
 **Read the Status section first, every time.** This file is meant to be
 updated as work progresses — don't assume a phase is incomplete just because
@@ -70,13 +72,45 @@ merged.
       database. See decision 10 for the full column/pagination/auth design
       and the infrastructure fix (TCP/IP) this took to get connectable.
 - [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection
-      string resolver). Registry location decided (decision 5's amendment):
-      a new table on the **existing** Railway Postgres, not a second Postgres
-      service.
+      string resolver).
+      - **Registry**: new table on the *existing* Railway Postgres (decision 5
+        amendment) — companyId → {server, database, login, encrypted password}.
+      - **Auth**: SQL Server authentication only. Windows Integrated Auth is
+        permanently out of scope, not deferred — Railway (Linux) can never use
+        it in production, and Azure SQL doesn't support it at all.
+      - **Topology**: since Azure is now the confirmed production target,
+        default shape is one shared Azure SQL logical server (or a small
+        number, for scaling) with one database per tenant — the demo's
+        nucase-demo-sql-v2 pattern (one server, many databases) *is* the
+        production pattern, not just a demo convenience. Resolver primarily
+        varies `database`; keep `server` independently variable too, for a
+        future large client needing an isolated server/pool. Each tenant gets
+        its own least-privilege SQL login (db_datareader only, matching the
+        local nucase_app pattern), credentials stored in the registry.
 - [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
-- [ ] Phase 7 — Metadata Postgres (pgvector) stood up on Railway for Vanna training data + tenant registry + chat history
-- [ ] Phase 8 — Deployed to Railway; Tailscale tunnel to a client network configured and tested
+- [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
+      Railway Postgres (not a second Postgres — Phase 4 already established
+      that pattern). Holds Vanna's training/vector data and chat_threads/
+      chat_messages (already there, no migration needed). **Mandatory**:
+      Vanna's own DB login must be scoped via table-level GRANTs to only its
+      training tables — explicitly excluding the Phase 4 tenant registry and
+      the users/companies tables. This is the real security boundary decision
+      5's original "separate Postgres" was protecting; reuse is safe only if
+      this scoping is enforced, not assumed.
+- [ ] Phase 8 — Deployed to Railway (**Pro plan required** — Static Outbound
+      IPs is a paid-tier feature), Static Outbound IPs enabled on the
+      nucase-web service, Azure SQL server firewall restricted to those
+      specific IPs (replacing the demo's wide-open 0.0.0.0–255.255.255.255
+      rule). **Tailscale dropped from scope entirely** — Azure SQL Database
+      is a public-endpoint PaaS service with built-in TLS, not a private
+      on-premise network to tunnel into; Tailscale's reason for existing in
+      this architecture no longer applies once production data lives on
+      Azure rather than each client's own premises. Note the residual
+      trade-off: Railway's static IPs are shared with other Railway Pro
+      customers (not dedicated to this app) — real defense-in-depth, but the
+      actual security boundary remains per-tenant SQL auth credentials, not
+      the IP allowlist alone.
 - [ ] Phase 9 — Client (React) updated, if response shapes changed at all
 
 ---
@@ -86,16 +120,19 @@ merged.
 | Layer | Technology | Role |
 |---|---|---|
 | Presentation | React.js SPA (CDN) | Unchanged from current app |
-| Application & Logic | Node.js / Express (Railway) | JWT-based tenant routing, resolves per-company SQL Server connection, orchestrates Vanna calls + validated execution |
+| Application & Logic | Node.js / Express (Railway) | JWT-based tenant routing, resolves per-company Azure SQL Database connection, orchestrates Vanna calls + validated execution |
 | Intelligence & Orchestration | Vanna (self-hosted, Railway) | Generates SQL only — **never executes it** |
-| Data | On-premise SQL Server, per tenant | Read-only access; client data never leaves their network |
-| Deployment | Railway PaaS + Tailscale tunnel | Bridges Railway to each client's on-prem firewall |
+| Data | Azure SQL Database, one database per tenant (decision 12) | Read-only access; per-tenant SQL login, TLS-encrypted connection |
+| Deployment | Railway PaaS (Pro plan — Static Outbound IPs), Azure SQL firewall allowlisted to those IPs | No tunnel; both ends are cloud PaaS with a public, TLS-secured endpoint |
 
 **The local Docker `mssql` service (`docker-compose.yml`, Phase 1) is not a
 tenant data source.** It exists solely to develop and test
-`schema.mssql.sql` locally. Every client's real Financial Data lives on
-*their own* on-premise SQL Server, per the row above — reached in production
-via a Tailscale tunnel (Phase 8), never via the local Docker container.
+`schema.mssql.sql` locally. Every tenant's real Financial Data lives in
+*their own* Azure SQL Database, per the row above — reached in production
+over Railway's Static Outbound IPs against Azure's public endpoint (Phase 8),
+never via the local Docker container. (This section originally described an
+on-premise-SQL-Server-plus-Tailscale-tunnel architecture — superseded by
+decision 12; see that decision for why.)
 
 ---
 
@@ -110,8 +147,8 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
    `OPENROUTER_API_KEY` / `openrouter.ts` setup. Do not add a second AI
    provider or credential for this.
 3. **One shared Vanna training set across all tenants.** The schema shape is
-   identical across every client's on-prem SQL Server — only the data
-   differs. Train once against the schema (DDL + example Q/SQL pairs); do not
+   identical across every tenant's Azure SQL Database (decision 12) — only
+   the data differs. Train once against the schema (DDL + example Q/SQL pairs); do not
    retrain per tenant.
 4. **Tenant isolation moves from row-filtering to connection-level
    isolation.** Today, `company_id` scoping happens inside a shared Postgres
@@ -444,11 +481,15 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
       local SQLEXPRESS example databases (decision 8), each free-tier serverless (auto-pauses
       when idle; first query after a while can take ~30-60s to resume — size any demo-day
       connection timeout accordingly, and do one warm-up query a minute before presenting).
-    - **Purpose: demo only, not the long-term production target.** The target architecture
-      (see that section above) is unchanged — real clients' data still lives on their own
-      on-premise SQL Server, reached via a Tailscale tunnel (Phase 8). Azure SQL Database
-      here is a convenience stand-in so a demo doesn't depend on any one person's machine
-      being online, nothing more.
+    - **Purpose at the time: demo only, not the long-term production target** — the target
+      architecture then called for real clients' data on their own on-premise SQL Server,
+      reached via a Tailscale tunnel (Phase 8), with Azure here as a convenience stand-in so
+      a demo didn't depend on any one person's machine being online.
+      **Superseded by decision 12**: Azure SQL Database is now the confirmed *production*
+      target too, not just the demo's. This section is kept as-written for the historical
+      record of why Azure was reached for originally (Railway can't run the SQL Server
+      container — see below); decision 12 is the current source of truth for what Azure's
+      role is going forward.
     - **Why Azure specifically, not Railway hosting its own SQL Server container**:
       Railway's own container runtime cannot run the SQL Server Docker image at all —
       confirmed by trying both the `2025-latest` and `2022-latest` tags, both failing
@@ -513,6 +554,69 @@ via a Tailscale tunnel (Phase 8), never via the local Docker container.
       `migrate.mssql.ts`/`seed.mssql.ts --target=full` runs above upgraded it in place — no
       further Railway variable change was needed for this decision, since the database
       identity (server/database name) didn't change, only its schema did.
+12. **Azure SQL Database is now the confirmed production target — not just
+    the demo's. The original on-premise-SQL-Server-plus-Tailscale-tunnel
+    architecture is abandoned, not deferred.** This changes the "Target
+    architecture" table and several earlier decisions/phases above, which
+    described the on-prem model as the eventual production destination —
+    those sections are kept as historical context (marked with pointers to
+    this decision), not rewritten to hide that the plan changed.
+
+    - **Auth**: SQL Server authentication only, permanently — not "SQL auth
+      for now, Windows Integrated Auth later" as decision 10 originally
+      framed it. Windows Integrated Auth requires the `msnodesqlv8` native
+      driver and SSPI/Kerberos, neither of which make sense once there's no
+      client-premises Windows domain to authenticate against: Railway runs
+      Linux containers, and Azure SQL Database doesn't support Windows
+      Integrated Auth at all. This closes decision 4's/10's previously-open
+      "may need different auth modes per real client" question — with every
+      tenant on Azure, they don't.
+    - **Topology**: one shared Azure SQL logical server (or a small number,
+      for horizontal scaling) with one database per tenant — i.e. the demo's
+      `nucase-demo-sql-v2` pattern (decision 11) *is* the production pattern
+      now, not a demo-only convenience that gets replaced later. This also
+      closes the "per-client host/topology" open question from earlier
+      Phase 4 planning discussion: the per-tenant connection resolver
+      primarily varies `database` against a shared `server`, matching
+      decision 8's tenancy-pattern finding almost exactly — decision 8 was
+      about the two *local* SQLEXPRESS example databases, but the same shape
+      turns out to be the real production answer too, not just a local-dev
+      coincidence. `server` stays independently variable in the registry
+      (decision 5's amendment) for a future large client that needs an
+      isolated server or connection pool, not folded away entirely.
+    - **Per-tenant credentials**: every tenant gets its own least-privilege
+      SQL login scoped to their own database only (`db_datareader`, matching
+      the `nucase_app` pattern already used for local dev — see decision 10),
+      not a shared admin login across tenants. Credentials live encrypted in
+      the Phase 4 tenant registry (decision 5's amendment), never in Vanna's
+      reach (see the guardrails section).
+    - **Networking**: Tailscale is dropped from scope entirely, not swapped
+      for a different tunnel technology. Tailscale's reason for existing in
+      this architecture was bridging Railway to a private on-premise network
+      it had no other route to; Azure SQL Database is a public-endpoint PaaS
+      service with its own TLS, so there is no private network to bridge
+      into anymore. Reaching it in production instead needs **Railway's
+      Static Outbound IPs** (a **Pro-plan-only feature** — confirms Railway
+      Pro is required for production, not just nice-to-have) so Azure's
+      firewall can allowlist specific IPs instead of staying wide open like
+      the demo's `0.0.0.0`–`255.255.255.255` rule.
+    - **Residual security note, deliberately not glossed over**: Railway's
+      Static Outbound IPs are shared across *all* Railway Pro customers, not
+      dedicated to this app — an IP allowlist alone is not tenant isolation.
+      The actual security boundary stays what decision 4 already established
+      it to be: per-tenant SQL Server authentication credentials, scoped to
+      one database each. The firewall rule is real defense-in-depth (keeps
+      the attack surface to "known Railway IP range + valid credentials"
+      instead of "the whole internet + valid credentials"), not the primary
+      control.
+    - **Why this decision, why now**: made explicitly during Phase 4
+      planning, prompted by the customer-demo work (decision 11) already
+      having stood up a real, working Azure SQL Database target and having
+      already hit and solved the "Railway can't run SQL Server containers"
+      problem that would have blocked a Railway-hosted alternative anyway.
+      Rather than build Phase 4's connection resolver against a topology
+      (on-prem + Tailscale) that was never actually exercised end-to-end,
+      it's built against the topology that has been.
 
 ---
 
@@ -575,14 +679,20 @@ requirements, not suggestions:
    `tedious`. Done — see decision 10 for the column/pagination/auth design
    `financialData.controller.ts` now uses, against one hardcoded target.
 4. **Per-tenant connection routing.** Replace the single shared pool with a
-   resolver keyed by the JWT's Company ID, backed by the metadata registry.
+   resolver keyed by the JWT's Company ID, backed by a new tenant registry
+   table on the *existing* Railway Postgres (decision 5's amendment) —
+   see decision 12 for the auth/topology/credentials design.
 5. **Vanna service + read-only guard.** Scaffold the Python service, train on
    the shared schema, wire the guard described above before any real
    execution path exists.
-6. **Metadata Postgres on Railway.** `pgvector`-backed store for Vanna
-   training data, tenant registry, and chat history.
-7. **Deploy + tunnel.** Railway hosting, Tailscale tunnel to a client
-   network, tested against a real (or staging) on-prem SQL Server.
+6. **pgvector on the existing Railway Postgres.** Not a second Postgres
+   service (decision 5's amendment) — training data lives alongside the
+   Phase 4 tenant registry and chat history, with Vanna's own DB login
+   table-GRANT-restricted away from both (mandatory, see guardrails).
+7. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
+   firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
+   was dropped from scope once Azure SQL Database (a public-endpoint PaaS
+   service) became the confirmed production target, not just the demo's.
 8. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
    changes; update only if response shapes moved.
 
