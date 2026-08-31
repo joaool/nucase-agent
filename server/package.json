@@ -11,7 +11,8 @@
     "db:migrate": "tsx db/migrate.ts",
     "db:migrate:mssql": "tsx db/migrate.mssql.ts",
     "db:seed": "tsx db/seed.ts",
-    "db:seed:mssql": "tsx db/seed.mssql.ts"
+    "db:seed:mssql": "tsx db/seed.mssql.ts",
+    "db:seed:tenant": "tsx db/seedTenantConnections.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

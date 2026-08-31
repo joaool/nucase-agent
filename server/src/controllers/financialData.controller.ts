@@ -1,14 +1,13 @@
-// Railway + Vanna migration, Phase 3 (see .claude/skills/railway-vanna-migration/SKILL.md,
-// decision 10). Queries SQL Server (via src/config/mssql.ts) instead of Postgres now — but
-// against one hardcoded target (MetalurgicaAurora), not yet per-tenant. `companyId` below is
-// still validated via userCanAccessCompany() (that check is orthogonal to which SQL Server
-// connection is used), but does NOT select which database gets queried — every request, for
-// every company, currently reads the same hardcoded target. Phase 4's per-tenant connection
-// resolver is what makes companyId actually route to the right database; don't "fix" this to
-// vary per company without going through that phase.
+// Railway + Vanna migration, Phase 4 (see .claude/skills/railway-vanna-migration/SKILL.md,
+// decision 12). Queries SQL Server via src/tenant/connectionResolver.ts, which resolves
+// `companyId` to that tenant's own database (Phase 3, decision 10, queried one hardcoded
+// target for every company — this is what replaced that). `companyId` still goes through
+// userCanAccessCompany() first — that's an orthogonal access-control check (can this user see
+// this company at all), separate from connection routing (which physical database that
+// company's data lives in).
 import type { Request, Response } from "express";
 import sql from "mssql";
-import { getMssqlPool } from "../config/mssql.js";
+import { getMssqlPoolForCompany } from "../tenant/connectionResolver.js";
 import { FINANCIAL_TABLES, FINANCIAL_TAB_ORDER } from "../config/financialTables.js";
 import { userCanAccessCompany } from "../utils/companyAccess.js";
 
@@ -73,7 +72,7 @@ export async function getFinancialTable(req: Request, res: Response) {
     OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
   `;
 
-  const pool = await getMssqlPool();
+  const pool = await getMssqlPoolForCompany(companyId);
   const result = await pool
     .request()
     .input("offset", sql.Int, offset)

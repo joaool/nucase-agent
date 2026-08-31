@@ -138,6 +138,31 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Phase 4 of the Railway + Vanna migration (see
+-- .claude/skills/railway-vanna-migration/SKILL.md, decision 5's amendment +
+-- decision 12) — the per-tenant SQL Server connection registry. One row per
+-- company: companyId -> {server, database, login, encrypted password}. Lives
+-- on this same Postgres (not a second one) by deliberate decision; Vanna's
+-- own Postgres login (Phase 6+) must never be GRANTed SELECT on this table —
+-- see the migration skill's guardrails.
+--
+-- mssql_password_encrypted is AES-256-GCM ciphertext (see
+-- src/config/tenantCrypto.ts), never plaintext — decrypted only in-process,
+-- only by server/src/tenant/connectionResolver.ts, only long enough to open
+-- a SQL Server connection.
+CREATE TABLE IF NOT EXISTS tenant_connections (
+  company_id                      UUID PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+  mssql_server                    TEXT NOT NULL,
+  mssql_port                      INTEGER NOT NULL DEFAULT 1433,
+  mssql_database                  TEXT NOT NULL,
+  mssql_user                      TEXT NOT NULL,
+  mssql_password_encrypted        TEXT NOT NULL,
+  mssql_encrypt                   BOOLEAN NOT NULL DEFAULT TRUE,
+  mssql_trust_server_certificate  BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at                      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_company ON bank_transactions(company_id);
 CREATE INDEX IF NOT EXISTS idx_chart_of_accounts_company ON chart_of_accounts(company_id);
 CREATE INDEX IF NOT EXISTS idx_contracts_company ON contracts(company_id);
