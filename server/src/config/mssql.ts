@@ -25,6 +25,14 @@ export interface MssqlTargetConfig {
   port: number;
   database: string;
   auth: MssqlAuthConfig;
+  // Local SQL Server Express and the Docker container have no real certificate to validate
+  // (trustServerCertificate: true, encrypt: false is fine for that dev/interim infrastructure).
+  // Azure SQL Database is the opposite: it requires an encrypted connection and presents a real
+  // CA-signed certificate, so it needs encrypt: true, trustServerCertificate: false — hardcoding
+  // the old dev-only pair here would just fail to connect. Defaults below preserve the original
+  // local-dev behavior when omitted, so existing local usage doesn't change.
+  encrypt?: boolean;
+  trustServerCertificate?: boolean;
 }
 
 export function buildPoolConfig(target: MssqlTargetConfig): sql.config {
@@ -40,10 +48,8 @@ export function buildPoolConfig(target: MssqlTargetConfig): sql.config {
     user: target.auth.userId,
     password: target.auth.password,
     options: {
-      // Matches the local dev SQL Server Express instance and the Docker container: no real
-      // certificate to validate, and this is dev/interim infrastructure, not a production path.
-      trustServerCertificate: true,
-      encrypt: false,
+      trustServerCertificate: target.trustServerCertificate ?? true,
+      encrypt: target.encrypt ?? false,
     },
   };
 }
@@ -59,6 +65,8 @@ function hardcodedTarget(): MssqlTargetConfig {
     port: env.mssqlPort,
     database: env.mssqlDatabase,
     auth: { type: "sql", userId: env.mssqlUser, password: env.mssqlPassword },
+    encrypt: env.mssqlEncrypt,
+    trustServerCertificate: env.mssqlTrustServerCertificate,
   };
 }
 

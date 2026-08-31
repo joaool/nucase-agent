@@ -31,4 +31,11 @@ export const env = {
   mssqlDatabase: process.env.MSSQL_APP_DATABASE ?? "MetalurgicaAurora",
   mssqlUser: process.env.MSSQL_APP_USER ?? "nucase_app",
   mssqlPassword: process.env.MSSQL_APP_PASSWORD,
+  // Default (false/true) matches local SQL Server Express and Docker, which have no real
+  // certificate to validate. A target that requires real TLS (e.g. Azure SQL Database, used for
+  // the customer-demo hardcoded target) sets MSSQL_APP_ENCRYPT=true and
+  // MSSQL_APP_TRUST_SERVER_CERTIFICATE=false via its own environment instead of changing this
+  // default — see mssql.ts's MssqlTargetConfig.
+  mssqlEncrypt: process.env.MSSQL_APP_ENCRYPT === "true",
+  mssqlTrustServerCertificate: process.env.MSSQL_APP_TRUST_SERVER_CERTIFICATE !== "false",
 };
