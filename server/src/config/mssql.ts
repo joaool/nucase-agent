@@ -35,6 +35,15 @@ export interface MssqlTargetConfig {
   trustServerCertificate?: boolean;
 }
 
+// mssql's own default (15s) isn't enough for Azure SQL Database's free/
+// serverless tier resuming from an idle auto-pause (~30-60s, occasionally
+// longer) — decision 11 already flagged this for the demo; Phase 4 hits it
+// for real once a tenant's database has been idle a while. 60s covers a cold
+// resume without making a request hang indefinitely on a genuinely dead
+// target — sized once here rather than per-caller, since every real target
+// (Azure now, whatever comes later) needs the same headroom.
+const CONNECTION_TIMEOUT_MS = 60_000;
+
 export function buildPoolConfig(target: MssqlTargetConfig): sql.config {
   if (target.auth.type !== "sql") {
     throw new Error(
@@ -47,6 +56,8 @@ export function buildPoolConfig(target: MssqlTargetConfig): sql.config {
     database: target.database,
     user: target.auth.userId,
     password: target.auth.password,
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+    requestTimeout: CONNECTION_TIMEOUT_MS,
     options: {
       trustServerCertificate: target.trustServerCertificate ?? true,
       encrypt: target.encrypt ?? false,
