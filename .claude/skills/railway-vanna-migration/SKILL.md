@@ -71,22 +71,30 @@ merged.
       — `companyId` still just gates access, it does not select the
       database. See decision 10 for the full column/pagination/auth design
       and the infrastructure fix (TCP/IP) this took to get connectable.
-- [ ] Phase 4 — Per-tenant connection routing built (Company ID → connection
-      string resolver).
-      - **Registry**: new table on the *existing* Railway Postgres (decision 5
-        amendment) — companyId → {server, database, login, encrypted password}.
-      - **Auth**: SQL Server authentication only. Windows Integrated Auth is
-        permanently out of scope, not deferred — Railway (Linux) can never use
-        it in production, and Azure SQL doesn't support it at all.
-      - **Topology**: since Azure is now the confirmed production target,
-        default shape is one shared Azure SQL logical server (or a small
-        number, for scaling) with one database per tenant — the demo's
-        nucase-demo-sql-v2 pattern (one server, many databases) *is* the
-        production pattern, not just a demo convenience. Resolver primarily
-        varies `database`; keep `server` independently variable too, for a
-        future large client needing an isolated server/pool. Each tenant gets
-        its own least-privilege SQL login (db_datareader only, matching the
-        local nucase_app pattern), credentials stored in the registry.
+- [x] Phase 4 — Per-tenant connection routing built (Company ID → connection
+      string resolver). **Verified end-to-end in production** — see decision
+      13 for the full implementation, provisioning, and verification record.
+      - **Registry**: `tenant_connections` table on the *existing* Railway
+        Postgres (decision 5 amendment) — companyId → {server, database,
+        login, AES-256-GCM-encrypted password, TLS options}. Populated for
+        both demo companies on both Postgres instances (local dev + Railway).
+      - **Auth**: SQL Server authentication only, as decided — Windows
+        Integrated Auth stays typed-but-unimplemented in `mssql.ts`,
+        permanently, not deferred.
+      - **Topology**: one shared Azure SQL logical server
+        (`nucase-demo-sql-v2`), one database per tenant, confirmed working —
+        `financialData.controller.ts` now calls
+        `getMssqlPoolForCompany(companyId)` with zero per-company branching;
+        the resolver is the only thing that varies.
+      - **Credentials**: each tenant has its own least-privilege Azure SQL
+        contained user (`aurora_app`, `flamecon_app` — `db_datareader` only),
+        replacing the shared `nucaseadmin` login Phase 3 used for both.
+      - **Fixed along the way**: `buildPoolConfig()` never set a connection/
+        request timeout, so it used `mssql`'s 15s default — not enough for
+        Azure SQL Database's serverless tier resuming from an idle
+        auto-pause. Bumped to 60s; caught live in production (both companies
+        500'd with "Failed to connect ... in 15000ms" on the first request
+        after the demo databases had gone idle since Phase 4 was seeded).
 - [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
 - [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
@@ -617,6 +625,95 @@ decision 12; see that decision for why.)
       Rather than build Phase 4's connection resolver against a topology
       (on-prem + Tailscale) that was never actually exercised end-to-end,
       it's built against the topology that has been.
+13. **Phase 4 implementation, provisioning, and verification record.**
+    Executes decision 12's design; nothing here revisits it.
+
+    - **`server/db/schema.sql`**: new `tenant_connections` table (companyId
+      PK/FK to `companies`, server/port/database/login/encrypted-password/TLS
+      columns, `created_at`/`updated_at`) — the decision 5 amendment's
+      registry, applied via the project's existing `IF NOT EXISTS` migration
+      convention.
+    - **`server/src/config/tenantCrypto.ts`** (new): AES-256-GCM encrypt/
+      decrypt for the passwords stored there, keyed by a new
+      `TENANT_CREDENTIALS_KEY` env var — optional at boot (same reasoning as
+      every other Phase 3/4 secret: a fresh clone shouldn't fail to start
+      over this), throws a scoped error only when something actually needs
+      to decrypt.
+    - **`server/src/config/mssql.ts`**: trimmed to just `buildPoolConfig()`
+      and the `MssqlTargetConfig`/`MssqlAuthConfig` types — the Phase 3
+      hardcoded single target and its module-level pool are gone entirely,
+      not just unused.
+    - **`server/src/tenant/connectionResolver.ts`** (new):
+      `getMssqlPoolForCompany(companyId)` — queries `tenant_connections`,
+      decrypts the password, builds a pool via `buildPoolConfig()`, caches it
+      in a `Map<companyId, Promise<ConnectionPool>>`. A failed connection
+      attempt is evicted from the cache rather than left as a permanently
+      rejected promise, so a transient failure (see the timeout fix below)
+      doesn't wedge a company's requests until a server restart.
+    - **`server/src/controllers/financialData.controller.ts`**: calls
+      `getMssqlPoolForCompany(companyId)` instead of the old no-arg
+      `getMssqlPool()`. `userCanAccessCompany()` is unchanged — still a
+      separate access-control check, orthogonal to connection routing, exactly
+      as decision 4 always intended.
+    - **`server/db/seedTenantConnections.ts`** (new) + `npm run
+      db:seed:tenant`: upserts one `tenant_connections` row per company
+      given connection details as CLI args (`--company=aurora|flamecon
+      --server=... --database=... --user=... --password=...`) — used for
+      local dev's registry row; **not** used for Railway's Postgres (see
+      below).
+    - **Per-tenant Azure credentials provisioned**: two new Azure SQL
+      *contained database users* (`aurora_app` on `MetalurgicaAurora`,
+      `flamecon_app` on `FlameConSolutions`, `db_datareader` only) —
+      contained users are the correct Azure SQL Database pattern for this
+      (no server-level `CREATE LOGIN` the way on-prem/Managed Instance
+      would need), and are inherently scoped to one database each, which is
+      exactly the least-privilege property decision 12 calls for. Replaces
+      the shared `nucaseadmin` admin login Phase 3 used for both.
+    - **Local dev gap found and fixed**: the local `nucase_app` login
+      (decision 10) only ever had `db_datareader` on `MetalurgicaAurora` —
+      granted it on `FlameConSolutions` too (`CREATE USER ... FOR LOGIN
+      nucase_app; ALTER ROLE db_datareader ADD MEMBER nucase_app;`) so local
+      dev actually exercises both tenants, not just one. Local
+      `tenant_connections` rows for both companies were seeded via `npm run
+      db:seed:tenant`.
+    - **Railway's Postgres was deliberately not touched by this repo's
+      tooling.** Getting a connection to it from outside Railway's network
+      needs either a public TCP proxy or `railway ssh`/`railway connect`
+      (SSH-tunnel-based) — the sandbox's own permission classifier correctly
+      blocked both `railway ssh ... psql` and (implicitly) the equivalent
+      `railway connect` invocation as outward-facing remote-execution
+      actions needing explicit user confirmation, not something to route
+      around. Rather than ask for a public proxy on the Postgres holding
+      real user password hashes and sessions (a materially bigger exposure
+      than the demo SQL Server's earlier temporary proxy), the two
+      `tenant_connections` rows were inserted by the user directly: AES-GCM
+      ciphertext for both passwords was computed locally (same
+      `TENANT_CREDENTIALS_KEY` set on Railway), then applied via `railway
+      connect Postgres --tunnel-only` (a local port-forward, no remote
+      command execution) plus a small throwaway Node script using the `pg`
+      package already in `server/package.json` — chosen over installing a
+      full PostgreSQL client just to get `psql`. Plaintext passwords never
+      left this machine.
+    - **Verified end-to-end, twice** — once locally (both companies return
+      real, genuinely different data — Portuguese construction-sector names
+      for Aurora, tech-sector names for FlameCon — confirmed by a real,
+      distinct SQL Server login-failure error the first time FlameCon's
+      local grant was still missing, proving actual per-company routing
+      rather than a cached/shared connection), and again against the live
+      deployed URL after pushing, logging in, and fetching Financial Data
+      for both companies by their real Company IDs.
+    - **Bug found and fixed via the production verification pass**:
+      `buildPoolConfig()` never set a connection/request timeout, so it used
+      `mssql`'s 15s default. Azure SQL Database's serverless tier can take
+      30-60s to resume from an idle auto-pause (decision 11 already flagged
+      this for manual demo use, advising a warm-up query) — the demo
+      databases had gone idle since being seeded for Phase 4, and the first
+      live request after that idle period failed with `Failed to connect to
+      nucase-demo-sql-v2.database.windows.net:1433 in 15000ms` for *both*
+      companies. Bumped `connectionTimeout`/`requestTimeout` to 60s in
+      `buildPoolConfig()` (sized once, centrally, for every real target, not
+      per-caller); re-verified live afterward — both companies returned data
+      successfully.
 
 ---
 
@@ -659,10 +756,10 @@ requirements, not suggestions:
 | `server/db/migrate.mssql.ts` | Gained `SCHEMA_FILE` env var (decision 11), defaulting to `schema.mssql.sql` — the Docker/default path is unchanged |
 | `server/db/seed.mssql.ts` | New (Phase 2, decision 9) — realistic, disjoint fake data for the 7 confirmed tables, one company profile per run. Gained `--target=full\|docker` (decision 11) |
 | `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
-| `server/src/config/mssql.ts` | New (Phase 3, decision 10) — `MssqlAuthConfig`/`MssqlTargetConfig` types, `getMssqlPool()`, one hardcoded target for now |
+| `server/src/config/mssql.ts` | Originated in Phase 3 (decision 10) with a hardcoded single target and `getMssqlPool()`; trimmed in Phase 4 (decision 13) to just `buildPoolConfig()` and the `MssqlAuthConfig`/`MssqlTargetConfig` types — `server/src/tenant/connectionResolver.ts` owns per-company pool creation/caching now |
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
-| `server/src/tenant/connectionResolver.ts` | New (Phase 4) — not started; `financialData.controller.ts` still targets the one hardcoded Phase 3 connection |
+| `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
 | `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) |
 | `vanna-service/` | New — separate Python service (Flask/FastAPI wrapping the `vanna` package), its own Railway service |
 
@@ -680,8 +777,9 @@ requirements, not suggestions:
    `financialData.controller.ts` now uses, against one hardcoded target.
 4. **Per-tenant connection routing.** Replace the single shared pool with a
    resolver keyed by the JWT's Company ID, backed by a new tenant registry
-   table on the *existing* Railway Postgres (decision 5's amendment) —
-   see decision 12 for the auth/topology/credentials design.
+   table on the *existing* Railway Postgres (decision 5's amendment). Done —
+   see decision 12 for the auth/topology/credentials design and decision 13
+   for the implementation, provisioning, and production verification record.
 5. **Vanna service + read-only guard.** Scaffold the Python service, train on
    the shared schema, wire the guard described above before any real
    execution path exists.
