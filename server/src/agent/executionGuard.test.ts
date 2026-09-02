@@ -64,6 +64,19 @@ describe("validateAndCapQuery — acceptance", () => {
     const result = validateAndCapQuery("SELECT 1 AS stub");
     assert.match(result, /TOP \(500\)/);
   });
+
+  test("multiple explicit, allowed columns on a single table pass", () => {
+    // Real allowlisted Clientes columns (financialTables.ts, decision 10).
+    const result = validateAndCapQuery("SELECT [Cliente], [Nome], [Moeda] FROM [dbo].[Clientes]");
+    assert.match(result, /TOP \(500\)/);
+  });
+
+  test("qualified allowed columns across a JOIN, resolved via alias, pass", () => {
+    const result = validateAndCapQuery(
+      "SELECT c.[Nome], m.[Valor] FROM [dbo].[Clientes] c JOIN [dbo].[MovimentosBancos] m ON c.[Cliente] = m.[Entidade]"
+    );
+    assert.match(result, /TOP \(500\)/);
+  });
 });
 
 describe("validateAndCapQuery — rejection", () => {
@@ -135,6 +148,56 @@ describe("validateAndCapQuery — rejection", () => {
   });
 });
 
+describe("validateAndCapQuery — column-level enforcement (reject, never rewrite)", () => {
+  test("rejects a directly-named disallowed column on an allowed table", () => {
+    // Fac_Mor is a real Clientes column deliberately excluded from the curated allowlist
+    // (financialTables.ts, decision 10 — see that file's per-tab column table).
+    assertViolation(
+      () => validateAndCapQuery("SELECT [Fac_Mor] FROM [dbo].[Clientes]"),
+      "DISALLOWED_COLUMN"
+    );
+  });
+
+  test("rejects SELECT * on an allowed table — never expanded or trimmed", () => {
+    assertViolation(() => validateAndCapQuery("SELECT * FROM [dbo].[Clientes]"), "WILDCARD_COLUMN");
+  });
+
+  test("rejects an aliased t.* wildcard the same way", () => {
+    assertViolation(
+      () => validateAndCapQuery("SELECT c.* FROM [dbo].[Clientes] c"),
+      "WILDCARD_COLUMN"
+    );
+  });
+
+  test("rejects a query mixing one allowed and one disallowed column — the whole query, not partially", () => {
+    // validateAndCapQuery has no partial-result return path at all — a thrown
+    // GuardViolationError from this synchronous function means nothing after it (including
+    // query execution, which lives entirely in executeGuardedQuery) ever ran.
+    assertViolation(
+      () => validateAndCapQuery("SELECT [Nome], [Fac_Mor] FROM [dbo].[Clientes]"),
+      "DISALLOWED_COLUMN"
+    );
+  });
+
+  test("rejects a disallowed column even when only used in WHERE, not the SELECT list", () => {
+    // Deliberately broader than "only check output columns" — see the module header comment.
+    assertViolation(
+      () => validateAndCapQuery("SELECT [Nome] FROM [dbo].[Clientes] WHERE [Fac_Mor] = 'x'"),
+      "DISALLOWED_COLUMN"
+    );
+  });
+
+  test("rejects an unqualified column in a multi-table JOIN as ambiguous, rather than guessing", () => {
+    assertViolation(
+      () =>
+        validateAndCapQuery(
+          "SELECT [Nome] FROM [dbo].[Clientes] c JOIN [dbo].[MovimentosBancos] m ON c.[Cliente] = m.[Entidade]"
+        ),
+      "AMBIGUOUS_COLUMN"
+    );
+  });
+});
+
 describe("executeGuardedQuery — integration (real Azure target)", () => {
   const canRunIntegration = Boolean(process.env.TENANT_CREDENTIALS_KEY);
 
@@ -162,4 +225,16 @@ describe("executeGuardedQuery — integration (real Azure target)", () => {
       (err: unknown) => err instanceof GuardViolationError && err.code === "DISALLOWED_TABLE"
     );
   });
+
+  test(
+    "a disallowed column against the real Aurora database is rejected end-to-end, not just at the AST level",
+    { skip: !canRunIntegration && "requires TENANT_CREDENTIALS_KEY and a seeded tenant_connections row (see server/db/seedTenantConnections.ts)" },
+    async () => {
+      const auroraCompanyId = "cac58add-9d65-4f9d-9ab4-a8e8395ce66f";
+      await assert.rejects(
+        () => executeGuardedQuery(auroraCompanyId, "SELECT [Fac_Mor] FROM [dbo].[Clientes]"),
+        (err: unknown) => err instanceof GuardViolationError && err.code === "DISALLOWED_COLUMN"
+      );
+    }
+  );
 });

@@ -8,14 +8,21 @@
 // subquery, and `SELECT ... INTO` (a DDL-creating statement disguised as a SELECT) genuinely
 // fails to parse under this dialect rather than silently being treated as safe.
 //
-// Table-level allowlisting only, matching the guardrail's literal wording ("table names
-// checked against the same FINANCIAL_TABLES allowlist the REST endpoint uses") — this does
-// NOT re-check column names the way financialData.controller.ts's curated `columns` lists do.
-// A `SELECT *` (or an explicit sensitive column) on an allowed table currently passes this
-// guard. financialTables.ts's own header comment documents exactly why that matters
-// (Funcionarios has 249 columns, some medical/identity-document fields) — that same risk
-// applies here and is NOT yet closed. Recorded as a known, deliberate gap in SKILL.md's Phase
-// 6 entry, not silently left out.
+// Table-*and-column*-level allowlisting (closed the column gap this file used to document as
+// a known, deliberate omission — see SKILL.md's Phase 6 entry for the history). Column checks
+// reuse financialTables.ts's existing per-table `columns` arrays as the sole source of truth
+// (decision 10) — no second, separate allowlist. `SELECT *`/`t.*` is rejected as a bare policy,
+// never expanded or silently trimmed to the allowed set, and any query referencing a column
+// outside its table's allowlist is rejected outright, never rewritten — the executed query is
+// always byte-identical to the query that was validated, for audit-trail integrity: what ran
+// against a tenant's data must always be provably the same text a reviewer can see was
+// generated, never a guard-modified variant. Deliberately broader than "only check columns
+// that appear in the SELECT list": every column reference `columnList()` reports — including
+// ones used only in WHERE/JOIN conditions — is checked, not just output columns. A hand-rolled
+// walk of just the SELECT list would need to separately handle columns nested inside aggregate
+// functions, CASE expressions, arithmetic, etc. to have equivalent coverage; reusing the same
+// `columnList()` mechanism already relied on for table-checking is simpler and more robust than
+// two different, harder-to-verify column-discovery paths for the same file.
 import sqlParserPkg from "node-sql-parser";
 import type { AST, Select } from "node-sql-parser";
 import sql from "mssql";
@@ -54,6 +61,9 @@ export type GuardViolationCode =
   | "MULTI_STATEMENT"
   | "NOT_SELECT"
   | "DISALLOWED_TABLE"
+  | "WILDCARD_COLUMN"
+  | "DISALLOWED_COLUMN"
+  | "AMBIGUOUS_COLUMN"
   | "QUERY_TIMEOUT";
 
 export class GuardViolationError extends Error {
@@ -68,6 +78,74 @@ export class GuardViolationError extends Error {
 
 function allowedTables(): Set<string> {
   return new Set(Object.values(FINANCIAL_TABLES).map((c) => c.table.toLowerCase()));
+}
+
+// Looks up a table's allowed columns by its bare (schema-less) name, e.g. "clientes" ->
+// financialTables.ts's "dbo.Clientes" entry's `columns`. Returns an empty set (fails closed,
+// rejects every column) rather than throwing if no match is found — shouldn't happen in
+// practice since callers only reach this after the table itself already passed the table
+// allowlist check, but an empty set is the safe default if that invariant is ever violated.
+function allowedColumnsFor(bareTableName: string): Set<string> {
+  const config = Object.values(FINANCIAL_TABLES).find(
+    (c) => c.table.toLowerCase() === `dbo.${bareTableName.toLowerCase()}`
+  );
+  return new Set((config?.columns ?? []).map((c) => c.toLowerCase()));
+}
+
+// Rejects (never rewrites) any query referencing a column outside its table's allowlist —
+// see the module header comment for why this checks every column reference `columnList()`
+// finds, not just the SELECT list, and why `SELECT *`/`t.*` gets its own explicit check rather
+// than being looked up like a named column (a wildcard has no name to allowlist against).
+function checkColumns(rawSql: string, select: Select, tableRefs: string[]): void {
+  const selectColumns = Array.isArray(select.columns) ? select.columns : [];
+  for (const col of selectColumns) {
+    if (col?.expr?.type === "column_ref" && col.expr.column === "*") {
+      throw new GuardViolationError(
+        "WILDCARD_COLUMN",
+        "SELECT * (or table.*) is not allowed — list explicit, allowlisted columns instead"
+      );
+    }
+  }
+
+  let columnRefs: string[];
+  try {
+    columnRefs = parser.columnList(rawSql, { database: DIALECT });
+  } catch (err) {
+    throw new GuardViolationError(
+      "PARSE_ERROR",
+      `Could not extract column references: ${(err as Error).message}`
+    );
+  }
+
+  // Bare (schema-less) real table names this query touches, e.g. "Clientes" — tableRefs was
+  // already validated against the table allowlist by the caller before this runs.
+  const realTableNames = new Set(
+    tableRefs.map((ref) => ref.split("::")[2]).filter((t): t is string => Boolean(t))
+  );
+  const singleTable = realTableNames.size === 1 ? [...realTableNames][0] : null;
+
+  for (const ref of columnRefs) {
+    const [, tablePart, columnPart] = ref.split("::");
+    if (columnPart === "(.*)") continue; // wildcard — already rejected above via the AST check
+    // columnList() resolves aliases to real table names when the column is qualified (e.g.
+    // "c.Nome" -> "Clientes::Nome"); "null" means unqualified, which it never attempts to
+    // guess at even in a single-table query — resolve that case ourselves, but only when
+    // exactly one table is in scope. An unqualified column in a multi-table query has no
+    // reliable owner to check against, so it's rejected rather than guessed at.
+    const resolvedTable = tablePart !== "null" ? tablePart : singleTable;
+    if (!resolvedTable) {
+      throw new GuardViolationError(
+        "AMBIGUOUS_COLUMN",
+        `Column "${columnPart}" is not qualified to a single unambiguous table`
+      );
+    }
+    if (!allowedColumnsFor(resolvedTable).has(columnPart.toLowerCase())) {
+      throw new GuardViolationError(
+        "DISALLOWED_COLUMN",
+        `Column "${columnPart}" on table "${resolvedTable}" is not in the Financial Data allowlist`
+      );
+    }
+  }
 }
 
 // Parses, validates, and returns a *new* SQL string with a TOP cap injected/tightened — never
@@ -119,6 +197,8 @@ export function validateAndCapQuery(rawSql: string, rowCap: number = DEFAULT_ROW
       );
     }
   }
+
+  checkColumns(rawSql, ast, tableRefs);
 
   const select = ast as SelectWithTop;
   const existingTop = typeof select.top?.value === "number" ? select.top.value : Infinity;

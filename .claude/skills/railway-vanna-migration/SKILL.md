@@ -202,26 +202,90 @@ merged.
         (`src/config/mssql.ts`, decision 13 — sized for Azure SQL
         Database's serverless cold-start resume, a different concern from
         bounding one ad-hoc unreviewed query actually running).
-      - **Known, deliberate gap — table-level allowlisting only, not
-        column-level.** The guardrail as literally worded ("table names
-        checked against the same `FINANCIAL_TABLES` allowlist") only
-        requires this. `financialData.controller.ts`'s curated `columns`
-        lists per table exist for a real reason documented in
-        `financialTables.ts`'s own header comment (`Funcionarios` alone has
-        249 columns, some medical/identity-document fields) — that same
-        leak risk applies to Vanna-generated SQL too: a `SELECT *` (or an
-        explicit sensitive column) on an *allowed* table currently passes
-        this guard. Not closed here; flagged for whoever wires this guard
-        into a real endpoint to decide whether/how to add before real
-        traffic reaches it.
+      - **Column-level allowlisting — closed as a required fix, not left as
+        the "known, deliberate gap" this entry originally documented.**
+        `financialData.controller.ts`'s curated `columns` lists per table
+        exist for a real reason (`financialTables.ts`'s own header comment
+        — `Funcionarios` alone has 249 columns, some medical/
+        identity-document fields); the same leak risk applied to
+        Vanna-generated SQL, and now doesn't: every column reference
+        `columnList()` finds — not just the `SELECT` list, also `WHERE`/
+        `JOIN` conditions, since a hand-rolled walk of just the output
+        columns would separately need to handle columns nested inside
+        aggregate functions, `CASE`, arithmetic, etc. to have equivalent
+        coverage — is checked against that table's real `columns` array
+        from `financialTables.ts` (decision 10; no second, separate
+        allowlist created). `SELECT *`/`t.*` is rejected as a bare policy
+        (checked directly against the parsed `SELECT` list, since a
+        wildcard has no name to look up) — never expanded, never silently
+        trimmed to the allowed set. **Reject, not rewrite, was the
+        deliberate choice**: the executed query must always be
+        byte-identical to the query that was validated, for audit-trail
+        integrity — what a reviewer sees Vanna generate must always be
+        provably the same text that ran, never a guard-modified variant.
+        Rewriting (e.g. silently dropping disallowed columns from the
+        `SELECT` list) was considered and rejected specifically for this
+        reason. An unqualified column in a multi-table query that
+        `columnList()` can't resolve to a single table is rejected as
+        ambiguous rather than guessed at, matching the same fail-closed
+        posture as everything else in this file.
+
+        **Informs Phase 7's training-data scoping**: Vanna should be
+        trained against this same curated column allowlist, not each
+        table's full raw DDL. Training on full DDL would make Vanna
+        routinely generate `SELECT *` or reference out-of-allowlist columns
+        (since nothing in its training data would suggest those columns
+        are off-limits), turning column-level rejections here from a rare
+        safety net into an ordinary, expected outcome — a strong signal
+        Phase 7 should scope its training schema context to
+        `financialTables.ts`'s `columns` arrays, not `schema.mssql.azure.sql`'s
+        real `CREATE TABLE` statements.
+      - **`SELECT`-only enforcement — confirmed, not assumed, which
+        mechanism actually does the work.** The primary defense is an
+        explicit AST check, `ast.type !== "select"` — this is what rejects
+        `DELETE`/`UPDATE`/`INSERT`/`DROP`/`ALTER`/`TRUNCATE`/`EXEC`, all of
+        which parse successfully (to a non-`"select"` type) and would slip
+        through if only a parse-success/failure check existed. `SELECT ...
+        INTO`'s rejection is a genuinely separate, incidental case — it
+        fails to *parse* at all under this dialect, so it never reaches the
+        type check — not the thing actually doing the enforcement work.
+        Confirmed by reading the current source directly before writing
+        this, not from memory of writing it originally.
+      - **Row cap remains rewrite-based — a deliberate, narrower exception
+        to "reject, not rewrite," not an oversight the column-check
+        work above forgot to also fix.** The row cap is a resource-bounding
+        concern (don't let an unreviewed query pull an unbounded result
+        set), not a content-integrity one (don't hide data the query asked
+        for) — those are different concerns with different correct
+        defaults. A pure reject-based cap (reject any query without its own
+        small enough `TOP`) would make the guard reject most realistic
+        LLM-generated SQL outright, since an NL-to-SQL model very commonly
+        doesn't include an explicit `TOP` unless specifically asked to
+        limit results — that would defeat the guard's usability for a
+        concern (resource bounding) the rewrite approach already handles
+        safely. Flagged explicitly here rather than silently left
+        inconsistent with the column check's stricter policy.
       - **Repo's first test suite** (`executionGuard.test.ts`, Node's
         built-in `node:test` — no new framework dependency added for one
-        module's tests): 18 unit tests covering every acceptance/rejection
-        case above, plus 2 integration tests against a **real** Azure
-        target (Aurora) — one confirming a validated query genuinely
-        executes end-to-end and the row cap is enforced against live data,
-        one confirming a disallowed table is rejected before any connection
-        is attempted. All 20 pass. `npm test` (root or `server/`) runs them.
+        module's tests): 29 tests — unit tests covering every
+        acceptance/rejection case (including the new column-level cases:
+        a directly named disallowed column, `SELECT *`, an aliased `t.*`,
+        a query mixing allowed and disallowed columns rejected wholesale
+        rather than partially, a disallowed column used only in `WHERE`,
+        and an ambiguous unqualified column in a `JOIN`), plus integration
+        tests against a **real** Azure target (Aurora): a validated query
+        executing end-to-end with the row cap enforced against live data,
+        a disallowed table rejected before any connection is attempted,
+        and — new — a disallowed column rejected end-to-end against the
+        real database, not just at the AST level in isolation. All 29
+        pass. `npm test` (root or `server/`) runs them. Fixed a real bug
+        found while extending this suite: `npm run build` had been
+        compiling `*.test.ts` into `dist/`, so `tsx --test`'s
+        pattern-based discovery ran every test twice (40 instead of 20) —
+        `server/tsconfig.build.json` (new, extends the base config,
+        excludes test files) is now what `npm run build` uses; the base
+        `tsconfig.json` is untouched so `--noEmit` typechecking still
+        covers test files.
       - **Not built in this phase**: no HTTP endpoint calls this guard yet.
         `server/src/agent/vannaClient.ts` (the Node-side HTTP client to
         `vanna-service`) still doesn't exist (Phase 5 didn't build it
@@ -257,6 +321,14 @@ merged.
       `vanna.core`/`vanna.agents` architecture (unexplored) before
       constructing any Vanna object or picking a vector-store integration.
       See Phase 5's "version-discovery note" for the full detail.
+
+      **Scope training data to `financialTables.ts`'s curated `columns`
+      allowlist, not each table's full raw DDL.** Phase 6's execution guard
+      now rejects (never rewrites) any column outside that same allowlist —
+      training against full DDL would make Vanna routinely generate
+      `SELECT *` or reference out-of-allowlist columns, turning those
+      rejections from a rare safety net into an ordinary, expected outcome.
+      See Phase 6's entry for the full reasoning.
 - [ ] Phase 8 — Deployed to Railway (**Pro plan required** — Static Outbound
       IPs is a paid-tier feature), Static Outbound IPs enabled on the
       nucase-web service, Azure SQL server firewall restricted to those
@@ -877,9 +949,18 @@ requirements, not suggestions:
 - **AI-generated SQL is never executed without the read-only guard first.**
   Single statement only; `SELECT`-only (reject `INSERT` / `UPDATE` /
   `DELETE` / `DROP` / `ALTER` / `TRUNCATE`, and reject multi-statement input
-  via semicolons); table names checked against the same `FINANCIAL_TABLES`
-  allowlist the REST endpoint uses; row cap and query timeout enforced in
-  Node before the query reaches SQL Server.
+  via semicolons); **table *and column* names** checked against the same
+  `FINANCIAL_TABLES` allowlist the REST endpoint uses (`SELECT *`/`t.*`
+  rejected outright, never expanded or trimmed — closed as a required fix,
+  not deferred as originally noted here, see Phase 6's entry); row cap and
+  query timeout enforced in Node before the query reaches SQL Server.
+  **Reject, never rewrite, for both the table and column checks** — the
+  query that executes must always be byte-identical to the query that was
+  validated, for audit-trail integrity. (The row cap is a deliberate
+  exception to this: it's a resource-bounding concern, not a
+  content-integrity one, and is enforced by tightening the query's `TOP`
+  clause — see Phase 6's entry for why that distinction was drawn rather
+  than assumed away.)
 - **Execution always uses a DB-level read-only login**, not just an
   app-level check — defense in depth if the guard above ever has a gap.
 - **Vanna never receives `company_id`** or any tenant-identifying value
@@ -913,7 +994,8 @@ requirements, not suggestions:
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
 | `server/src/agent/vannaClient.ts` | Not started — the Node-side HTTP client that would call `vanna-service`'s `/generate-sql` (Phase 5 scope was the Python service only). When built, must call a generate-only method, never one that executes SQL |
-| `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | New (Phase 6) — done and verified (real T-SQL parsing, table allowlist, AST-level row cap, query timeout); see the Phase 6 status entry. Table-level allowlisting only, not column-level — known gap, documented in the file itself and in Phase 6's entry. Not yet called by any HTTP endpoint |
+| `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | New (Phase 6) — done and verified (real T-SQL parsing, table *and column* allowlist enforced by rejection never rewrite, AST-level row cap as a deliberate exception to that, query timeout); see the Phase 6 status entry. Not yet called by any HTTP endpoint |
+| `server/tsconfig.build.json` | New (Phase 6) — extends `tsconfig.json`, excludes `*.test.ts` from what `npm run build` emits to `dist/`; `tsconfig.json` itself is unchanged so `--noEmit` typechecking still covers test files |
 | `vanna-service/` | New (Phase 5) — separate Python (FastAPI) service, its own Railway service. `/generate-sql` (stubbed) + `/health` + an OpenRouter LLM connector, built and verified — see Phase 5's status entry. Does **not** depend on the `vanna` package yet (nothing imports it) |
 
 ---
@@ -943,12 +1025,13 @@ requirements, not suggestions:
    generation code.
 6. **Read-only execution guard.** Implemented in Node — mandatory, not
    optional (see guardrails). Done — see the Phase 6 status entry for the
-   full write-up (real T-SQL parsing, AST-level row-cap injection,
-   Promise.race-based query timeout, table-level-only allowlisting as a
-   known gap, the repo's first test suite). Tested against hand-crafted SQL
-   strings and a real Azure connection, not yet against genuine
-   Vanna-generated SQL — that still waits on step 7's training sub-step,
-   and no HTTP endpoint calls this guard yet either.
+   full write-up (real T-SQL parsing, table *and* column allowlisting
+   enforced by rejection not rewrite, AST-level row-cap injection as a
+   deliberate exception to that, Promise.race-based query timeout, the
+   repo's first test suite). Tested against hand-crafted SQL strings and a
+   real Azure connection, not yet against genuine Vanna-generated SQL —
+   that still waits on step 7's training sub-step, and no HTTP endpoint
+   calls this guard yet either.
 7. **pgvector on the existing Railway Postgres.** Not a second Postgres
    service (decision 5's amendment) — training data lives alongside the
    Phase 4 tenant registry and chat history, with Vanna's own DB login
