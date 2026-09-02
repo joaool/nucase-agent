@@ -17,6 +17,7 @@
     "db:migrate:mssql": "npm run db:migrate:mssql -w server",
     "db:seed": "npm run db:seed -w server",
     "db:seed:mssql": "npm run db:seed:mssql -w server --",
+    "test": "npm run test -w server",
     "build": "npm run build -w server && npm run build -w client",
     "start": "npm run start -w server"
   },

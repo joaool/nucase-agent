@@ -164,7 +164,71 @@ merged.
       Node-side HTTP client that would call this service) — Phase 5's scope
       as confirmed was the Python service only; the Node client is a
       separate, not-yet-requested piece.
-- [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
+- [x] Phase 6 — Read-only execution guard implemented in Node (mandatory,
+      not optional). **Built and verified** —
+      `server/src/agent/executionGuard.ts`:
+
+      - **Real T-SQL parsing (`node-sql-parser`, `transactsql` dialect), not
+        regex/string matching.** Verified empirically, not assumed: it
+        correctly extracts a table reference hidden inside a
+        `WHERE ... IN (SELECT ...)` subquery (a regex checking only the
+        top-level `FROM` would miss this), and `SELECT ... INTO` (a
+        DDL-creating statement disguised as a SELECT) genuinely fails to
+        parse under this dialect rather than silently being accepted — both
+        confirmed with real parser calls before being relied on, not
+        guessed at.
+      - **Single-statement, `SELECT`-only, table-allowlist-checked against
+        the same `FINANCIAL_TABLES` the REST endpoint uses** — multi-table
+        `JOIN`s across allowed tables are explicitly *permitted*, matching
+        decision 1's trade (open-ended multi-table question support is the
+        whole reason Vanna was adopted over the old single-table-only
+        tool-calling agent); only *disallowed* tables are rejected.
+      - **Row cap enforced by modifying the parsed AST directly**
+        (injecting/tightening a `TOP` clause), not by wrapping the query in
+        an outer `SELECT TOP (n) * FROM (...)` — that wrapping approach was
+        tried first and rejected: T-SQL doesn't allow a trailing `ORDER BY`
+        inside a derived table unless *that inner query* also has its own
+        `TOP`/`OFFSET`, so wrapping arbitrary LLM-generated SQL (which very
+        plausibly ends in `ORDER BY`) would break exactly the queries most
+        likely to need a stable row cap. AST-level injection sidesteps this
+        entirely. Default cap 500 (matches Phase 3's `DEFAULT_PAGE_SIZE`
+        convention); an existing `TOP` smaller than the cap is left alone,
+        larger is reduced, none gets the cap added.
+      - **Query timeout (15s) enforced via `Promise.race` +
+        `request.cancel()`**, not a `Request.timeout` property — checked
+        directly against `@types/mssql` rather than assumed: no such
+        property exists on the `Request` class. Deliberately tighter than
+        the connection pool's 60s `connectionTimeout`/`requestTimeout`
+        (`src/config/mssql.ts`, decision 13 — sized for Azure SQL
+        Database's serverless cold-start resume, a different concern from
+        bounding one ad-hoc unreviewed query actually running).
+      - **Known, deliberate gap — table-level allowlisting only, not
+        column-level.** The guardrail as literally worded ("table names
+        checked against the same `FINANCIAL_TABLES` allowlist") only
+        requires this. `financialData.controller.ts`'s curated `columns`
+        lists per table exist for a real reason documented in
+        `financialTables.ts`'s own header comment (`Funcionarios` alone has
+        249 columns, some medical/identity-document fields) — that same
+        leak risk applies to Vanna-generated SQL too: a `SELECT *` (or an
+        explicit sensitive column) on an *allowed* table currently passes
+        this guard. Not closed here; flagged for whoever wires this guard
+        into a real endpoint to decide whether/how to add before real
+        traffic reaches it.
+      - **Repo's first test suite** (`executionGuard.test.ts`, Node's
+        built-in `node:test` — no new framework dependency added for one
+        module's tests): 18 unit tests covering every acceptance/rejection
+        case above, plus 2 integration tests against a **real** Azure
+        target (Aurora) — one confirming a validated query genuinely
+        executes end-to-end and the row cap is enforced against live data,
+        one confirming a disallowed table is rejected before any connection
+        is attempted. All 20 pass. `npm test` (root or `server/`) runs them.
+      - **Not built in this phase**: no HTTP endpoint calls this guard yet.
+        `server/src/agent/vannaClient.ts` (the Node-side HTTP client to
+        `vanna-service`) still doesn't exist (Phase 5 didn't build it
+        either) — this phase's scope was the guard module itself, tested
+        standalone against hand-crafted SQL strings (a more rigorous test
+        than hoping an LLM happens to produce bad SQL) and against a real
+        connection, not a live end-to-end chat flow.
 - [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
       Railway Postgres (not a second Postgres — Phase 4 already established
       that pattern). Holds Vanna's training/vector data and chat_threads/
@@ -848,7 +912,8 @@ requirements, not suggestions:
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | Not started — the Node-side HTTP client that would call `vanna-service`'s `/generate-sql` (Phase 5 scope was the Python service only) and the Phase 6 read-only guard. When built, `vannaClient.ts` calls a generate-only method, never one that executes SQL |
+| `server/src/agent/vannaClient.ts` | Not started — the Node-side HTTP client that would call `vanna-service`'s `/generate-sql` (Phase 5 scope was the Python service only). When built, must call a generate-only method, never one that executes SQL |
+| `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | New (Phase 6) — done and verified (real T-SQL parsing, table allowlist, AST-level row cap, query timeout); see the Phase 6 status entry. Table-level allowlisting only, not column-level — known gap, documented in the file itself and in Phase 6's entry. Not yet called by any HTTP endpoint |
 | `vanna-service/` | New (Phase 5) — separate Python (FastAPI) service, its own Railway service. `/generate-sql` (stubbed) + `/health` + an OpenRouter LLM connector, built and verified — see Phase 5's status entry. Does **not** depend on the `vanna` package yet (nothing imports it) |
 
 ---
@@ -877,9 +942,13 @@ requirements, not suggestions:
    restructured API that step 7 needs to resolve before writing real
    generation code.
 6. **Read-only execution guard.** Implemented in Node — mandatory, not
-   optional (see guardrails). Can only be tested against genuine
-   Vanna-generated SQL once step 7's training sub-step lands; until then,
-   tested against step 5's stub.
+   optional (see guardrails). Done — see the Phase 6 status entry for the
+   full write-up (real T-SQL parsing, AST-level row-cap injection,
+   Promise.race-based query timeout, table-level-only allowlisting as a
+   known gap, the repo's first test suite). Tested against hand-crafted SQL
+   strings and a real Azure connection, not yet against genuine
+   Vanna-generated SQL — that still waits on step 7's training sub-step,
+   and no HTTP endpoint calls this guard yet either.
 7. **pgvector on the existing Railway Postgres.** Not a second Postgres
    service (decision 5's amendment) — training data lives alongside the
    Phase 4 tenant registry and chat history, with Vanna's own DB login
