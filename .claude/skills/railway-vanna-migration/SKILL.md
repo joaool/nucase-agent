@@ -95,7 +95,31 @@ merged.
         auto-pause. Bumped to 60s; caught live in production (both companies
         500'd with "Failed to connect ... in 15000ms" on the first request
         after the demo databases had gone idle since Phase 4 was seeded).
-- [ ] Phase 5 — Vanna service scaffolded (Python, `/generate-sql` endpoint), trained on shared schema, LLM connector pointed at OpenRouter
+- [ ] Phase 5 — Vanna service **scaffolding only** (Python, Flask/FastAPI
+      wrapping `vanna`): the `/generate-sql` endpoint and the LLM connector
+      pointed at OpenRouter (decision 2). **No training in this phase** —
+      training needs pgvector storage, which doesn't exist until Phase 7
+      (sequencing fix: the original single-phase description had Phase 5
+      "trained on shared schema" before its own storage existed, which was
+      never actually completable as written). The endpoint returns a
+      stubbed/mock SQL response for now, clearly marked as a stub, so the
+      service and its `/generate-sql` API contract can be built and tested
+      independently of storage. Real training is a sub-step under Phase 7,
+      once pgvector tables exist — see that entry; the guard in Phase 6
+      can only be tested against genuine Vanna-generated SQL after that
+      sub-step lands, not from this phase alone.
+
+      **Implementation note — permanent, not just confirmed once and
+      forgotten:** the endpoint must call Vanna's `generate_sql()` method
+      only, never `ask()`, and this service must never mount Vanna's
+      built-in `VannaFlaskApp`. Both `ask()` and `VannaFlaskApp` execute SQL
+      by default — they're designed for Vanna's own end-user chat UI, not
+      for use as a generation-only backend API — so using either naively
+      here would silently violate the "Vanna never executes" guardrail
+      below. The Vanna instance itself must never be constructed with a
+      live database connection (no on-prem/Azure SQL credentials, no
+      Postgres credentials) — it has no legitimate reason to hold one if
+      `generate_sql()` is the only method ever called on it.
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
 - [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
       Railway Postgres (not a second Postgres — Phase 4 already established
@@ -106,6 +130,16 @@ merged.
       the users/companies tables. This is the real security boundary decision
       5's original "separate Postgres" was protecting; reuse is safe only if
       this scoping is enforced, not assumed.
+
+      **Training sub-step (not a separate phase):** once these tables exist,
+      run real training — generate and store schema embeddings (DDL +
+      example Q/SQL pairs, per decision 3's "one shared training set")  —
+      which is what turns Phase 5's `/generate-sql` endpoint from a stub
+      into the real thing. This must complete before Phase 6's read-only
+      execution guard can be tested against genuine Vanna-generated SQL
+      rather than the Phase 5 stub — see Phase 5's entry for the
+      corresponding note; the two entries cross-reference each other so the
+      ordering constraint is visible from either one.
 - [ ] Phase 8 — Deployed to Railway (**Pro plan required** — Static Outbound
       IPs is a paid-tier feature), Static Outbound IPs enabled on the
       nucase-web service, Azure SQL server firewall restricted to those
@@ -178,7 +212,7 @@ decision 12; see that decision for why.)
    `users`/`companies`/`user_companies`/`chat_threads`/`chat_messages` — not
    a second, separate Postgres service. Phase 4's tenant connection registry
    (Company ID → SQL Server connection config) is a new table added there.
-   When Phase 6 later adds Vanna's `pgvector` training/vector store to this
+   When Phase 7 later adds Vanna's `pgvector` training/vector store to this
    same database, **Vanna's own Postgres login must be scoped via table-level
    `GRANT`/`REVOKE`** to only its own training tables — explicitly excluding
    the tenant connection registry and the `users`/`companies`/`user_companies`
@@ -189,7 +223,7 @@ decision 12; see that decision for why.)
    the same category of defense-in-depth already required for SQL Server
    execution in the guardrails section below ("DB-level read-only login, not
    just an app-level check"). Whether Vanna's tables also live in a separate
-   Postgres *schema* (e.g. `vanna` vs `public`) for clarity is a Phase 6
+   Postgres *schema* (e.g. `vanna` vs `public`) for clarity is a Phase 7
    implementation detail, not decided here — table-level grants achieve the
    isolation either way.
 6. **Staying on Express, not migrating to NestJS**, unless a separate
@@ -274,7 +308,8 @@ decision 12; see that decision for why.)
    different connection strings.
 9. **Realistic per-tenant seed data exists (`server/db/seed.mssql.ts`,
    Phase 2) — and getting it inserting cleanly surfaced real constraints
-   Phase 5/6 will hit again if this isn't read first.** Hand-authored data
+   the Phase 7 training sub-step and Phase 6's execution guard will both hit
+   again if this isn't read first.** Hand-authored data
    (not a random generator — matches this repo's existing `db/seed.ts`
    convention), extending the *same* fictional businesses already in the
    Postgres demo data (Aurora = metalworking/construction, FlameCon =
@@ -734,7 +769,7 @@ requirements, not suggestions:
   beyond what's needed to pick a connection. Tenant identity selects *which*
   database Vanna's generated SQL runs against; it is never a filter value.
 - **Vanna's own Postgres login must be table-level `GRANT`-restricted to only
-  its training/vector tables** once Phase 6 adds them to the existing Railway
+  its training/vector tables** once Phase 7 adds them to the existing Railway
   Postgres (decision 5's amendment) — it must not be able to `SELECT` the
   Phase 4 tenant connection registry or the `users`/`companies`/
   `user_companies` tables, even though they live in the same database.
@@ -760,7 +795,7 @@ requirements, not suggestions:
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) |
+| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) — `vannaClient.ts` calls `generate_sql()` only, never `ask()`/`VannaFlaskApp`, and never holds a live DB connection (see Phase 5's status entry) |
 | `vanna-service/` | New — separate Python service (Flask/FastAPI wrapping the `vanna` package), its own Railway service |
 
 ---
@@ -780,18 +815,29 @@ requirements, not suggestions:
    table on the *existing* Railway Postgres (decision 5's amendment). Done —
    see decision 12 for the auth/topology/credentials design and decision 13
    for the implementation, provisioning, and production verification record.
-5. **Vanna service + read-only guard.** Scaffold the Python service, train on
-   the shared schema, wire the guard described above before any real
-   execution path exists.
-6. **pgvector on the existing Railway Postgres.** Not a second Postgres
+5. **Vanna service scaffolding only.** Python service (Flask/FastAPI wrapping
+   `vanna`), the `/generate-sql` endpoint, LLM connector pointed at
+   OpenRouter (decision 2). Stubbed/mock response for now — no training yet,
+   since pgvector storage doesn't exist until step 7. Must call
+   `generate_sql()` only (never `ask()`/`VannaFlaskApp`, both of which
+   execute SQL by default) and must never hold a live database connection —
+   see the Phase 5 status entry for the full note.
+6. **Read-only execution guard.** Implemented in Node — mandatory, not
+   optional (see guardrails). Can only be tested against genuine
+   Vanna-generated SQL once step 7's training sub-step lands; until then,
+   tested against step 5's stub.
+7. **pgvector on the existing Railway Postgres.** Not a second Postgres
    service (decision 5's amendment) — training data lives alongside the
    Phase 4 tenant registry and chat history, with Vanna's own DB login
-   table-GRANT-restricted away from both (mandatory, see guardrails).
-7. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
+   table-GRANT-restricted away from both (mandatory, see guardrails). Once
+   these tables exist, run the real training sub-step (schema embeddings,
+   decision 3) — this is what turns step 5's endpoint from a stub into the
+   real thing.
+8. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
    firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
    was dropped from scope once Azure SQL Database (a public-endpoint PaaS
    service) became the confirmed production target, not just the demo's.
-8. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
+9. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
    changes; update only if response shapes moved.
 
 ---
