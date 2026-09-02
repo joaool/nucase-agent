@@ -5,5 +5,11 @@ dist/
 *.log
 .DS_Store
 
+# vanna-service/ (Python)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Regenerated every run by server/db/seed.mssql.ts — never a source of truth
 server/db/*.generated.sql

@@ -1,0 +1,19 @@
+# Railway + Vanna migration, Phase 5 (see .claude/skills/railway-vanna-migration/SKILL.md).
+# Direct dependencies only, pinned to the versions actually resolved and installed against this
+# service's code (verified via `pip install` + `pip freeze`, not guessed) — matches the intent
+# of server/package.json listing direct deps and letting pip/npm resolve transitives.
+#
+# `vanna` is deliberately NOT listed here yet: nothing in this service imports it in Phase 5
+# (see app/main.py and app/openrouter_llm.py's module docstrings) — it becomes a real dependency
+# starting Phase 7, once real generation code gets written. When it's added, note that the
+# installed `vanna` is now a 2.x release with a restructured package (a `vanna.legacy` module
+# preserves the 0.x-style `generate_sql()`/`ask()`/`VannaFlaskApp` API this skill's guardrails
+# are written against; a separate, unexplored `vanna.core`/`vanna.agents` architecture also
+# exists) — confirm which surface Phase 7 is targeting before assuming `vanna.legacy` is still
+# the only option.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+openai==3.7.0
+python-dotenv==1.2.3
+httpx==0.28.1
+pytest==9.1.1

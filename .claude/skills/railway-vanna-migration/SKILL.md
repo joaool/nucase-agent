@@ -95,31 +95,75 @@ merged.
         auto-pause. Bumped to 60s; caught live in production (both companies
         500'd with "Failed to connect ... in 15000ms" on the first request
         after the demo databases had gone idle since Phase 4 was seeded).
-- [ ] Phase 5 — Vanna service **scaffolding only** (Python, Flask/FastAPI
-      wrapping `vanna`): the `/generate-sql` endpoint and the LLM connector
-      pointed at OpenRouter (decision 2). **No training in this phase** —
-      training needs pgvector storage, which doesn't exist until Phase 7
-      (sequencing fix: the original single-phase description had Phase 5
-      "trained on shared schema" before its own storage existed, which was
-      never actually completable as written). The endpoint returns a
-      stubbed/mock SQL response for now, clearly marked as a stub, so the
-      service and its `/generate-sql` API contract can be built and tested
-      independently of storage. Real training is a sub-step under Phase 7,
-      once pgvector tables exist — see that entry; the guard in Phase 6
-      can only be tested against genuine Vanna-generated SQL after that
-      sub-step lands, not from this phase alone.
+- [x] Phase 5 — Vanna service **scaffolding only** (Python, FastAPI —
+      **not** wrapping `vanna` yet, see the version-discovery note below):
+      the `/generate-sql` endpoint and the LLM connector pointed at
+      OpenRouter (decision 2). **No training in this phase** — training
+      needs pgvector storage, which doesn't exist until Phase 7 (sequencing
+      fix: the original single-phase description had Phase 5 "trained on
+      shared schema" before its own storage existed, which was never
+      actually completable as written). The endpoint returns a stubbed/mock
+      SQL response for now, clearly marked as a stub, so the service and its
+      `/generate-sql` API contract can be built and tested independently of
+      storage. Real training is a sub-step under Phase 7, once pgvector
+      tables exist — see that entry; the guard in Phase 6 can only be
+      tested against genuine Vanna-generated SQL after that sub-step lands,
+      not from this phase alone.
 
       **Implementation note — permanent, not just confirmed once and
-      forgotten:** the endpoint must call Vanna's `generate_sql()` method
-      only, never `ask()`, and this service must never mount Vanna's
-      built-in `VannaFlaskApp`. Both `ask()` and `VannaFlaskApp` execute SQL
+      forgotten:** whichever Vanna API surface Phase 7 ends up using (see
+      the version-discovery note below), the endpoint must call a
+      SQL-*generation*-only method (`generate_sql()` in the 0.x-compatible
+      surface) — never `ask()`, and this service must never mount Vanna's
+      own built-in web app (`VannaFlaskApp` in that same surface, or
+      whatever Phase 7's chosen equivalent is otherwise). Both execute SQL
       by default — they're designed for Vanna's own end-user chat UI, not
       for use as a generation-only backend API — so using either naively
       here would silently violate the "Vanna never executes" guardrail
-      below. The Vanna instance itself must never be constructed with a
+      below. Whatever Vanna object Phase 7 constructs must never be given a
       live database connection (no on-prem/Azure SQL credentials, no
       Postgres credentials) — it has no legitimate reason to hold one if
-      `generate_sql()` is the only method ever called on it.
+      only a generate-only method is ever called on it.
+
+      **Version-discovery note, found while building this (real, not
+      theoretical):** `pip install vanna` resolves to a **2.x release** with
+      a substantially restructured package — `vanna.openai.OpenAI_Chat`
+      (the import path this skill's guardrails were originally written
+      against) no longer exists at that path. A `vanna.legacy` module
+      preserves the 0.x-compatible surface (`vanna.legacy.openai`,
+      `vanna.legacy.pgvector`, `vanna.legacy.flask`, including
+      `generate_sql()`/`ask()`/`VannaFlaskApp` by their familiar names), but
+      a separate, unexplored `vanna.core`/`vanna.agents`/`vanna.servers`
+      architecture also exists as the apparent new primary API — genuinely
+      unknown territory, not evaluated here. **`vanna` was deliberately left
+      out of this phase's `requirements.txt` entirely** — nothing in Phase
+      5's code imports it (the stub endpoint never constructs a Vanna
+      object), so adding its dependency tree (pandas, plotly, sqlalchemy,
+      ~30MB+) now would only bloat this phase's deployable for no
+      functional benefit. **Phase 7 must explicitly decide `vanna.legacy`
+      vs. the new `vanna.core`/`agents` architecture before writing any real
+      generation code** — don't assume `vanna.legacy`/`OpenAI_Chat` is still
+      the only or obvious option just because this skill's guardrails
+      happen to use those names.
+
+      **Built and verified**: `vanna-service/` (FastAPI, `/generate-sql` +
+      `/health`), `app/openrouter_llm.py` (OpenRouter connector — real
+      `openai` SDK client, same base URL/attribution headers as
+      `server/src/config/openrouter.ts`, reuses `OPENROUTER_API_KEY`/
+      `OPENROUTER_MODEL`). Verified with a **real** OpenRouter API call
+      (`check_connection()`, using the same key the Node server already
+      uses) — not just that the client object constructs correctly. Full
+      pytest suite passes (7 passed, 1 skipped without a key present);
+      confirmed live over real HTTP (`uvicorn` + `curl`) that `/health` and
+      `/generate-sql` both respond correctly, including that
+      `GenerateSqlRequest` has no `company_id` field at all (decision 4,
+      enforced structurally, not just by convention) — test asserts the
+      schema's exact field set.
+
+      **Not built in this phase**: `server/src/agent/vannaClient.ts` (the
+      Node-side HTTP client that would call this service) — Phase 5's scope
+      as confirmed was the Python service only; the Node client is a
+      separate, not-yet-requested piece.
 - [ ] Phase 6 — Read-only execution guard implemented in Node (mandatory, not optional)
 - [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
       Railway Postgres (not a second Postgres — Phase 4 already established
@@ -140,6 +184,15 @@ merged.
       rather than the Phase 5 stub — see Phase 5's entry for the
       corresponding note; the two entries cross-reference each other so the
       ordering constraint is visible from either one.
+
+      **Before writing real generation code here**: Phase 5 discovered the
+      installed `vanna` package is a 2.x release with a restructured API —
+      decide explicitly between `vanna.legacy` (preserves the familiar
+      `generate_sql()`/`ask()`/`VannaFlaskApp` 0.x-compatible surface, so
+      this skill's guardrails apply as literally written) and the new
+      `vanna.core`/`vanna.agents` architecture (unexplored) before
+      constructing any Vanna object or picking a vector-store integration.
+      See Phase 5's "version-discovery note" for the full detail.
 - [ ] Phase 8 — Deployed to Railway (**Pro plan required** — Static Outbound
       IPs is a paid-tier feature), Static Outbound IPs enabled on the
       nucase-web service, Azure SQL server firewall restricted to those
@@ -795,8 +848,8 @@ requirements, not suggestions:
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
 | `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | New (Phase 5 / 6) — `vannaClient.ts` calls `generate_sql()` only, never `ask()`/`VannaFlaskApp`, and never holds a live DB connection (see Phase 5's status entry) |
-| `vanna-service/` | New — separate Python service (Flask/FastAPI wrapping the `vanna` package), its own Railway service |
+| `server/src/agent/vannaClient.ts`, `executionGuard.ts` | Not started — the Node-side HTTP client that would call `vanna-service`'s `/generate-sql` (Phase 5 scope was the Python service only) and the Phase 6 read-only guard. When built, `vannaClient.ts` calls a generate-only method, never one that executes SQL |
+| `vanna-service/` | New (Phase 5) — separate Python (FastAPI) service, its own Railway service. `/generate-sql` (stubbed) + `/health` + an OpenRouter LLM connector, built and verified — see Phase 5's status entry. Does **not** depend on the `vanna` package yet (nothing imports it) |
 
 ---
 
@@ -815,13 +868,14 @@ requirements, not suggestions:
    table on the *existing* Railway Postgres (decision 5's amendment). Done —
    see decision 12 for the auth/topology/credentials design and decision 13
    for the implementation, provisioning, and production verification record.
-5. **Vanna service scaffolding only.** Python service (Flask/FastAPI wrapping
-   `vanna`), the `/generate-sql` endpoint, LLM connector pointed at
-   OpenRouter (decision 2). Stubbed/mock response for now — no training yet,
-   since pgvector storage doesn't exist until step 7. Must call
-   `generate_sql()` only (never `ask()`/`VannaFlaskApp`, both of which
-   execute SQL by default) and must never hold a live database connection —
-   see the Phase 5 status entry for the full note.
+5. **Vanna service scaffolding only.** Python (FastAPI) service, the
+   `/generate-sql` endpoint, LLM connector pointed at OpenRouter (decision
+   2). Done — stubbed/mock response for now, no training yet since pgvector
+   storage doesn't exist until step 7, and `vanna` itself deliberately isn't
+   a dependency yet (nothing imports it) — see the Phase 5 status entry for
+   the full write-up, including a real version-discovery about `vanna` 2.x's
+   restructured API that step 7 needs to resolve before writing real
+   generation code.
 6. **Read-only execution guard.** Implemented in Node — mandatory, not
    optional (see guardrails). Can only be tested against genuine
    Vanna-generated SQL once step 7's training sub-step lands; until then,
