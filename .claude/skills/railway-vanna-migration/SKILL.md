@@ -295,32 +295,144 @@ merged.
         connection, not a live end-to-end chat flow.
 - [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
       Railway Postgres (not a second Postgres — Phase 4 already established
-      that pattern). Holds Vanna's training/vector data and chat_threads/
-      chat_messages (already there, no migration needed). **Mandatory**:
-      Vanna's own DB login must be scoped via table-level GRANTs to only its
-      training tables — explicitly excluding the Phase 4 tenant registry and
-      the users/companies tables. This is the real security boundary decision
-      5's original "separate Postgres" was protecting; reuse is safe only if
-      this scoping is enforced, not assumed.
+      that pattern). **Plan approved; implementation starting.** Full design
+      below — this is no longer aspirational.
 
-      **Training sub-step (not a separate phase):** once these tables exist,
-      run real training — generate and store schema embeddings (DDL +
-      example Q/SQL pairs, per decision 3's "one shared training set")  —
-      which is what turns Phase 5's `/generate-sql` endpoint from a stub
-      into the real thing. This must complete before Phase 6's read-only
-      execution guard can be tested against genuine Vanna-generated SQL
-      rather than the Phase 5 stub — see Phase 5's entry for the
-      corresponding note; the two entries cross-reference each other so the
-      ordering constraint is visible from either one.
+      **Architecture: `vanna.legacy`, confirmed by direct package
+      introspection, not the (incomplete) migration docs.** Read the
+      installed `vanna` 2.0.2 package's actual source rather than trust
+      `vanna.ai/docs/migration`, which doesn't document `vanna.legacy`'s API
+      at all and admits no explicit guidance exists for generate-only mode.
+      Confirmed directly: `VannaBase.generate_sql(question) -> str` needs no
+      database connection at all; `connect_to_mssql`/`connect_to_postgres`
+      exist *solely* to power `run_sql()`/`ask()` (their own docstrings say
+      so); `ask()`'s return type (`Tuple[sql, pandas.DataFrame, ...]`)
+      proves it executes internally. The new `vanna.core.agent.Agent`/
+      `ToolRegistry` architecture is agentic-by-default (the migration guide
+      itself: `LegacyVannaAdapter` "automatically wraps `vn.run_sql()` as a
+      tool") and `vanna.agents` is currently an empty module (verified via
+      `dir()`) — not viable today regardless. Building
+      `class NucaseVanna(OpenAI_Chat, PG_VectorStore)`, calling only
+      `generate_sql()`, never constructing it with a live database
+      connection — this matches the guardrails below exactly as worded, no
+      reinterpretation needed. Known tradeoff, stated plainly: `vanna.legacy`
+      is an explicit backward-compat layer a future `vanna` major version
+      could deprecate.
 
-      **Before writing real generation code here**: Phase 5 discovered the
-      installed `vanna` package is a 2.x release with a restructured API —
-      decide explicitly between `vanna.legacy` (preserves the familiar
-      `generate_sql()`/`ask()`/`VannaFlaskApp` 0.x-compatible surface, so
-      this skill's guardrails apply as literally written) and the new
-      `vanna.core`/`vanna.agents` architecture (unexplored) before
-      constructing any Vanna object or picking a vector-store integration.
-      See Phase 5's "version-discovery note" for the full detail.
+      **Postgres schema/role design — concrete SQL, not aspiration:**
+      ```sql
+      CREATE SCHEMA IF NOT EXISTS vanna;
+      CREATE ROLE vanna_app LOGIN PASSWORD '<generated>';
+      ALTER ROLE vanna_app SET search_path = vanna;
+      GRANT USAGE, CREATE ON SCHEMA vanna TO vanna_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA vanna GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO vanna_app;
+      REVOKE ALL ON tenant_connections, users, companies, user_companies, chat_threads, chat_messages FROM vanna_app;
+      REVOKE ALL ON SCHEMA public FROM vanna_app;
+      ```
+      - New schema `vanna`, not `public` (was left open in decision 5's
+        amendment — decided here). `tenant_connections`/`users`/`companies`/
+        `user_companies`/`chat_threads`/`chat_messages` stay in `public`,
+        untouched.
+      - **`search_path`, not explicit schema configuration — verified
+        necessary by reading `vanna/legacy/pgvector/pgvector.py` directly,
+        not assumed.** `PG_VectorStore.__init__` constructs three
+        `langchain_postgres.vectorstores.PGVector` instances passing only
+        `embeddings`/`collection_name`/`connection` — no schema parameter
+        exposed anywhere in vanna's own wrapper. Its `get_training_data()`/
+        `remove_training_data()`/`remove_collection()` methods issue raw,
+        schema-*unqualified* SQL directly (`SELECT ... FROM
+        langchain_pg_embedding`, no prefix). With no config knob available
+        and no schema qualification in the library's own queries, Postgres's
+        `search_path` is the only mechanism that can control where these
+        auto-created tables land — hence `ALTER ROLE vanna_app SET
+        search_path = vanna`, applied server-side to every connection
+        authenticated as that role regardless of which client library
+        (SQLAlchemy engine, langchain's psycopg connection) opens it.
+      - `CREATE` (not just DML) granted on the `vanna` schema because
+        `langchain_postgres`'s `PGVector` auto-creates its own tables
+        (`langchain_pg_collection`/`langchain_pg_embedding`-shaped) on first
+        connect — their exact column shape not yet verified (import failed
+        locally on a missing `langchain_core` dependency before it could be
+        inspected further; installing it and confirming the exact shape is
+        one of the first implementation steps, though the schema-scoped
+        grant design doesn't depend on knowing it in advance).
+      - The explicit `REVOKE` statements are defensive/redundant (Postgres
+        denies by default; nothing was ever granted on those tables) —
+        included anyway as a clear, explicit statement of intent against a
+        future accidental broad grant, matching this project's
+        belt-and-suspenders convention elsewhere.
+      - **Verify structurally, not by assertion**, once implemented:
+        `has_table_privilege('vanna_app', 'tenant_connections', 'SELECT')`
+        and the same for `users`/`companies`/`user_companies` must all
+        return `false` — real output goes here once run, not a claim.
+
+      **`vanna_app`'s own credential**: stored on the **`vanna-service`**
+      Railway service (not `nucase-web` — this Postgres access belongs to
+      the Python service that actually talks to it), as
+      `VANNA_DATABASE_URL` (a full Postgres connection string). Mirrored in
+      `vanna-service/.env` locally against a local `vanna_app`-equivalent
+      role, matching how `nucase_app`/`aurora_app`/`flamecon_app` were each
+      set up in both places during Phase 4.
+
+      **Training-data format — generated from `financialTables.ts`, not
+      hand-typed per table** (avoids manual-transcription drift if that
+      file's `columns` ever changes). One worked example, verified against
+      both `financialTables.ts` and `schema.mssql.sql` directly rather than
+      recalled from memory — `Clientes`, 11 curated columns (not the real
+      table's 158):
+      ```sql
+      CREATE TABLE [dbo].[Clientes] (
+        [Cliente] [nvarchar](12) NOT NULL PRIMARY KEY,
+        [Nome] [nvarchar](50) NULL,
+        [NumContrib] [nvarchar](20) NULL,
+        [Pais] [nvarchar](2) NULL,
+        [Moeda] [nvarchar](3) NULL,
+        [CondPag] [nvarchar](2) NULL,
+        [Situacao] [nvarchar](10) NULL,
+        [LimiteCred] [float] NULL,
+        [Vendedor] [nvarchar](3) NULL,
+        [NomeFiscal] [nvarchar](150) NULL,
+        [TotalDeb] [float] NULL
+      );
+      ```
+      Example question/SQL pairs, **English and Portuguese both** — real
+      usage is expected to include Portuguese questions, so the training set
+      is bilingual throughout, not English-only with token Portuguese
+      coverage:
+      - EN: "What is the credit limit for client CL0001?"
+      - PT: "Qual é o limite de crédito do cliente CL0001?"
+      - SQL (both): `SELECT [LimiteCred] FROM [dbo].[Clientes] WHERE [Cliente] = 'CL0001'`
+
+      Full set covers curated DDL for all 7 tables plus a bilingual mix of
+      example pairs across them (single-table and at least one join),
+      generated the same `financialTables.ts`-sourced way as the example
+      above — not hand-typed per table.
+
+      **`vannaClient.ts`**: a thin, stateless HTTP client —
+      `generateSql(question: string): Promise<{sql, stub, note}>`, POSTing
+      only `{ question }` to `vanna-service`'s `/generate-sql`. Constructs
+      or holds no Vanna/DB state of any kind; has no
+      company/tenant-identifying parameter at all (decision 4 — matches
+      `GenerateSqlRequest`'s already-verified-empty shape on the Python
+      side, Phase 5). New env var: `VANNA_SERVICE_URL`, on `nucase-web`.
+
+      **Training sub-step (not a separate phase):** once the schema/role and
+      class exist, run real training as above — this is what turns Phase 5's
+      `/generate-sql` endpoint from a stub into the real thing. Must
+      complete before Phase 6's read-only execution guard can be tested
+      against genuine Vanna-generated SQL rather than the Phase 5 stub — see
+      Phase 5's entry for the corresponding note; the two entries
+      cross-reference each other so the ordering constraint is visible from
+      either one.
+
+      **Acceptance test — states what "Phase 7 done" means, before
+      implementation, not after:** `vannaClient.generateSql("What is the
+      credit limit for client CL0001?")` returns real `vanna.legacy`-trained
+      SQL (`stub: false`, not the Phase 5 stub), that SQL passes Phase 6's
+      `executeGuardedQuery()` without rejection, executes successfully
+      against **Aurora's real Azure database**, and returns CL0001's actual
+      row. Not "the pieces exist" — a real, logged, passed run of this exact
+      question through the real pipeline.
 
       **Scope training data to `financialTables.ts`'s curated `columns`
       allowlist, not each table's full raw DDL.** Phase 6's execution guard
