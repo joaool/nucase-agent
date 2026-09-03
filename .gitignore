@@ -13,3 +13,9 @@ __pycache__/
 
 # Regenerated every run by server/db/seed.mssql.ts — never a source of truth
 server/db/*.generated.sql
+
+# Railway + Vanna migration, Phase 7. Fully derived from committed source
+# (server/db/generateVannaTrainingData.ts, financialTables.ts, schema.mssql.sql) — regenerate
+# with `npx tsx db/generateVannaTrainingData.ts > ../vanna-service/training_data.json`, never
+# hand-edited or a source of truth itself.
+vanna-service/training_data.json

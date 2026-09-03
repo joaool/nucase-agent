@@ -30,4 +30,10 @@ export const env = {
   // missing. Generate one with:
   //   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
   tenantCredentialsKey: process.env.TENANT_CREDENTIALS_KEY,
+  // Railway + Vanna migration, Phase 7 (see src/agent/vannaClient.ts, decision 4). Base URL
+  // for the separate Python vanna-service. Deliberately NOT required() — same reasoning as
+  // tenantCredentialsKey above: a clone that isn't using the AI Chat feature yet shouldn't
+  // fail to boot over this. vannaClient.ts throws a clear error only when generateSql() is
+  // actually called and this is unset.
+  vannaServiceUrl: process.env.VANNA_SERVICE_URL,
 };

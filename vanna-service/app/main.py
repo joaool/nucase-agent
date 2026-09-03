@@ -1,33 +1,41 @@
-# Railway + Vanna migration, Phase 5 (see .claude/skills/railway-vanna-migration/SKILL.md) —
-# scaffolding only. /generate-sql returns a hardcoded stub response for now, not real Vanna
-# output: training needs pgvector storage, which doesn't exist until Phase 7 (see that entry's
-# "training sub-step"). No `vanna` package import happens anywhere in this service yet — see
-# app/openrouter_llm.py's module docstring for why, and for a real discovery worth knowing
-# before Phase 7 starts: the installed `vanna` package is now a 2.x release with a restructured
-# API surface (`vanna.legacy` preserves the 0.x-style `generate_sql()`/`ask()`/`VannaFlaskApp`
-# this skill's guardrails are written against; a separate `vanna.core`/`vanna.agents`
-# architecture also exists and is unexplored) — Phase 7 needs to explicitly choose between them
-# before writing any real generation code, not assume `vanna.legacy` is still the only option.
+# Railway + Vanna migration, Phase 7 (see .claude/skills/railway-vanna-migration/SKILL.md).
+# /generate-sql now calls the real, trained Vanna object (app/vanna_client.py) — no more
+# hardcoded stub. Built against `vanna.legacy` (see the Phase 7 entry for the researched
+# reasoning over vanna.core/vanna.agents).
 #
-# Permanent implementation note (not just confirmed once and forgotten — see SKILL.md's Phase 5
-# entry for the full version): whichever surface Phase 7 picks, this endpoint must end up
-# calling a SQL-*generation*-only method (`generate_sql()` in the legacy API) — never `ask()`,
-# and this service must never mount Vanna's own built-in web app (`VannaFlaskApp` in the legacy
-# API, or any Phase-7-chosen equivalent in the new one). Both execute SQL against a live
-# database by default — they're built for Vanna's own end-user chat UI, not a generation-only
-# backend API — so using either naively would silently violate the "Vanna never executes"
-# guardrail. Whatever Vanna object Phase 7 constructs must never be given a live database
-# connection (no on-prem/Azure SQL credentials, no Postgres credentials) — it has no legitimate
-# reason to hold one if only a generate-only method is ever called on it.
+# Permanent implementation note (kept from Phase 5, still load-bearing): this endpoint calls
+# only a SQL-*generation*-only method (`generate_sql(question, allow_llm_to_see_data=False)`)
+# — never `ask()`, and this service never mounts Vanna's own built-in web app
+# (`VannaFlaskApp`). Both execute SQL against a live database by default — they're built for
+# Vanna's own end-user chat UI, not a generation-only backend API — so using either naively
+# would silently violate the "Vanna never executes" guardrail.
+# `allow_llm_to_see_data` is hardcoded False, never a request field: passing True lets
+# generate_sql() internally call run_sql() on intermediate queries — NucaseVanna has no SQL
+# *runner* mixin at all (only OpenAI_Chat + PG_VectorStore), so that path would fail loudly
+# rather than silently reach a database if this were ever changed by mistake, but it must
+# never be set True regardless.
 #
 # This endpoint never receives or forwards a company/tenant identifier (decision 4) —
 # GenerateSqlRequest below has no such field, by design, not oversight. Connection routing
 # happens entirely in the Node backend (server/src/tenant/connectionResolver.ts); Vanna only
-# ever sees a natural-language question and (once trained) shared schema context.
+# ever sees a natural-language question and the shared, curated schema context it was trained
+# on (server/db/generateVannaTrainingData.ts).
 from __future__ import annotations
 
-from fastapi import FastAPI
-from pydantic import BaseModel
+from dotenv import load_dotenv
+
+# Loads vanna-service/.env into the process environment. Nothing previously did this for the
+# actual running app (only individual test files loaded it ad hoc) — harmless while
+# /generate-sql was a stub that touched no env vars, but a real gap now that it calls
+# get_vanna_client(), which needs OPENROUTER_API_KEY/VANNA_DATABASE_URL at request time. Must
+# run before any request is handled; doesn't need to run before the imports below since both
+# read env vars lazily (get_vanna_client()'s cache is built on first call, not at import time).
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from .vanna_client import get_vanna_client  # noqa: E402
 
 app = FastAPI(title="Nucase Vanna Service")
 
@@ -49,11 +57,16 @@ async def health() -> dict[str, str]:
 
 @app.post("/generate-sql", response_model=GenerateSqlResponse)
 async def generate_sql(request: GenerateSqlRequest) -> GenerateSqlResponse:
-    # Deliberately ignores request.question for now — see module docstring above. Once Phase
-    # 7's training sub-step lands, this becomes a real call to a Vanna generate-only method.
-    del request
+    try:
+        vn = get_vanna_client()
+        sql = vn.generate_sql(request.question, allow_llm_to_see_data=False)
+    except Exception as exc:  # noqa: BLE001 — surface as a clean 502, not a stack trace
+        raise HTTPException(
+            status_code=502, detail=f"SQL generation failed: {exc}"
+        ) from exc
+
     return GenerateSqlResponse(
-        sql="SELECT 1 AS stub",
-        stub=True,
-        note="Training is not yet configured (Phase 7) — this is a placeholder response, not real Vanna output.",
+        sql=sql,
+        stub=False,
+        note="Generated by vanna.legacy against the curated training schema.",
     )

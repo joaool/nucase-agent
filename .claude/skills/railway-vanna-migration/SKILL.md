@@ -293,10 +293,14 @@ merged.
         standalone against hand-crafted SQL strings (a more rigorous test
         than hoping an LLM happens to produce bad SQL) and against a real
         connection, not a live end-to-end chat flow.
-- [ ] Phase 7 — pgvector + Vanna training tables added to the *existing*
+- [x] Phase 7 — pgvector + Vanna training tables added to the *existing*
       Railway Postgres (not a second Postgres — Phase 4 already established
-      that pattern). **Plan approved; implementation starting.** Full design
-      below — this is no longer aspirational.
+      that pattern). **Built and verified end-to-end** — see decision 14 for
+      the full implementation record (schema/role provisioning, real
+      `vanna.legacy` training run, `/generate-sql` wired for real,
+      `vannaClient.ts` built, and the exact acceptance-test run/output). Plan
+      below is kept as the approved design; decision 14 is the completion
+      record.
 
       **Architecture: `vanna.legacy`, confirmed by direct package
       introspection, not the (incomplete) migration docs.** Read the
@@ -1051,6 +1055,136 @@ decision 12; see that decision for why.)
       per-caller); re-verified live afterward — both companies returned data
       successfully.
 
+14. **Phase 7 implementation, provisioning, and verification record.**
+    Executes the approved plan (kept above); nothing here revisits the
+    architecture decision (`vanna.legacy`) or GRANT design — this is the real
+    run, with real output.
+
+    - **`vanna_app` provisioned, both locally and on Railway**
+      (`server/db/setupVannaRole.ts`, idempotent — creates or updates the
+      role/password, applies the schema/GRANT design verbatim from the
+      approved plan). Structural verification (`has_table_privilege`, not
+      just asserted) printed `"no access, correct"` for all 6 sensitive
+      tables (`tenant_connections`, `users`, `companies`, `user_companies`,
+      `chat_threads`, `chat_messages`) on both targets.
+      **Credential hygiene, ongoing policy**: the user explicitly instructed
+      that `vanna_app`'s **Railway** Postgres password must never be written
+      to any file — regenerate fresh whenever it's next needed, rather than
+      reusing or persisting one. Honored throughout this phase: the password
+      was regenerated at least once specifically because a prior value had
+      only been used for a throwaway verification step, and every real use
+      (training, the acceptance test, running the service locally) passed it
+      as an env var directly to the process, never through `vanna-service/.env`
+      or any other tracked/untracked file. This SKILL.md entry deliberately
+      does not contain it either.
+    - **`CREATE EXTENSION vector;` confirmed working on Railway's Postgres**
+      (pgvector 0.8.6) before any class construction was attempted, per the
+      plan's own precondition. One real snag found and fixed along the way:
+      the extension had been created in `public` (by the admin connection
+      used to check it), but `vanna_app`'s `search_path` deliberately
+      excludes `public` — `langchain_postgres`'s auto-created
+      `langchain_pg_embedding` table couldn't resolve the `vector` type as a
+      result (`type "vector" does not exist`). Fixed with
+      `ALTER EXTENSION vector SET SCHEMA vanna;`, not by adding `public` back
+      to `vanna_app`'s `search_path` — the security boundary stays intact,
+      the extension just moved to where the restricted role can already see
+      it. Re-verified before/after via `pg_extension`'s `extnamespace`.
+    - **`NucaseVanna(OpenAI_Chat, PG_VectorStore)` built exactly to the
+      installed package's real constructor signatures** (read directly from
+      `vanna/legacy/{pgvector,openai}/*.py`, not assumed from docs):
+      `PG_VectorStore.__init__` needs `connection_string` and (optionally)
+      `embedding_function` in `config`; `OpenAI_Chat.__init__` takes a
+      pre-built `client` as a separate constructor argument, and reads
+      `config["model"]` at call time in `submit_prompt()`. Embeddings use
+      `langchain_openai.OpenAIEmbeddings` pointed at OpenRouter's
+      OpenAI-compatible `/embeddings` endpoint
+      (`openai/text-embedding-3-small`) — reuses `OPENROUTER_API_KEY`
+      (decision 2), avoids pulling in Vanna's default local
+      HuggingFace/torch embedding model. Lives in
+      `vanna-service/app/vanna_client.py`, lazily built and cached
+      per-process (`get_vanna_client()`) — never constructed at import time,
+      so importing `app.main` for tests doesn't require live infra.
+    - **Training data generated from source, not hand-typed**
+      (`server/db/generateVannaTrainingData.ts`): parses `schema.mssql.sql`'s
+      real `CREATE TABLE` blocks, cross-references each table's curated
+      `columns` from `financialTables.ts`, and throws if a curated column
+      doesn't actually exist in the real DDL — a scoping-mistake safety net,
+      not just documentation of intent. Produces curated DDL for all 7 tables
+      (byte-for-byte matching the approved plan's `Clientes` worked example)
+      plus 9 hand-authored bilingual (EN/PT) example question/SQL pairs
+      (one per table, plus one join example across `MovimentosBancos` +
+      `Clientes`) — every pair reviewed by hand against the same column
+      allowlist the DDL generation checks automatically. Output written to
+      `vanna-service/training_data.json` — gitignored (new `.gitignore`
+      entry), since it's fully reproducible from committed source and
+      shouldn't be a second source of truth.
+    - **Real training run** (`vanna-service/train.py`, idempotent — clears
+      any previously-trained rows via `get_training_data()` +
+      `remove_training_data(id)` first, since `vanna.legacy`'s `train()` has
+      no built-in dedup of its own, confirmed by reading
+      `vanna/legacy/pgvector/pgvector.py` directly) against Railway's
+      Postgres via the tunnel: **7 DDL statements + 18 bilingual
+      question/SQL rows = 25 total**, confirmed by `get_training_data()`
+      immediately after. A leftover throwaway `test_table` DDL entry from
+      earlier class-construction testing was deleted first so it wouldn't
+      pollute the real corpus.
+    - **`/generate-sql` now calls real `generate_sql()`** (`app/main.py`) —
+      `allow_llm_to_see_data` hardcoded `False`, never a request field
+      (matches the Phase 5 permanent implementation note); `NucaseVanna` has
+      no SQL-*runner* mixin at all, so even a future accidental `True` here
+      would fail loudly rather than silently reach a database. Errors
+      surface as a clean `502`, not a raw stack trace.
+    - **Real gap found and fixed**: nothing previously loaded
+      `vanna-service/.env` for the actual running app — only individual test
+      files called `load_dotenv()` ad hoc. Harmless while `/generate-sql`
+      was a stub; a real bug now that it needs `OPENROUTER_API_KEY`/
+      `VANNA_DATABASE_URL` at request time. Fixed by loading `.env` at the
+      top of `app/main.py` itself.
+    - **`server/src/agent/vannaClient.ts` built**: thin, stateless
+      `generateSql(question): Promise<{sql, stub, note}>`, POSTs only
+      `{ question }`, holds no Vanna/DB state, has no company/tenant
+      parameter — matches the approved plan and `GenerateSqlRequest`'s
+      already-verified-empty shape (Phase 5). New env var
+      `VANNA_SERVICE_URL` on `server/.env.example`, optional (same
+      "fresh clone shouldn't fail to boot" pattern as `TENANT_CREDENTIALS_KEY`).
+    - **Acceptance test run for real, exact output logged, not summarized
+      after the fact**:
+      ```
+      1. vannaClient.generateSql("What is the credit limit for client CL0001?")
+         sql:  SELECT [LimiteCred] FROM [dbo].[Clientes] WHERE [Cliente] = 'CL0001'
+         stub: false
+
+      2. executeGuardedQuery(AURORA_COMPANY_ID, sql)
+         columns: LimiteCred
+         rows:    [ { LimiteCred: 0 } ]
+
+      ACCEPTANCE TEST PASSED.
+      ```
+      Run locally (both `nucase-web` and `vanna-service` as local processes,
+      per the user's "Local first" answer establishing compute location —
+      training-data *storage* still used Railway's real Postgres throughout,
+      that was never in question). The guard added its normal `TOP` cap to
+      the executed query (expected, documented behavior, not a rejection);
+      no column/table violation was triggered, and Vanna's generated SQL
+      never touched a column outside `Clientes`'s allowlist on its own,
+      without ever having been told what that allowlist is beyond what its
+      curated training DDL implies.
+    - **Test suites updated to match**: `vanna-service`'s
+      `test_generate_sql_returns_stub` (asserted stub behavior that no
+      longer exists) replaced with a real, `VANNA_DATABASE_URL`-gated
+      `test_generate_sql_real_end_to_end` — same gating convention
+      `executionGuard.test.ts`'s integration tests already use, run for real
+      once (passed) rather than only unit-tested against a mock.
+    - **Deliberately not done in this phase** (see the file/directory map
+      for the `sqlAgent.ts`/`vannaClient.ts` rows): no chat-flow endpoint
+      calls `vannaClient.ts` yet — the acceptance test calls it directly,
+      standalone, matching the plan's own scope. The old tool-calling
+      `sqlAgent.ts`/`financialQueryTools.ts` therefore stay in place, still
+      backing the live AI Chat feature, even though the condition for
+      removing them ("Vanna path verified end-to-end") is now met. Deploying
+      `vanna-service` to Railway itself also remains deferred — Phase 8
+      territory, not this phase's "Local first" scope.
+
 ---
 
 ## Non-negotiable guardrails
@@ -1079,10 +1213,14 @@ requirements, not suggestions:
   beyond what's needed to pick a connection. Tenant identity selects *which*
   database Vanna's generated SQL runs against; it is never a filter value.
 - **Vanna's own Postgres login must be table-level `GRANT`-restricted to only
-  its training/vector tables** once Phase 7 adds them to the existing Railway
-  Postgres (decision 5's amendment) — it must not be able to `SELECT` the
-  Phase 4 tenant connection registry or the `users`/`companies`/
-  `user_companies` tables, even though they live in the same database.
+  its training/vector tables** on the existing Railway Postgres (decision 5's
+  amendment) — it must not be able to `SELECT` the Phase 4 tenant connection
+  registry or the `users`/`companies`/`user_companies` tables, even though
+  they live in the same database. **Done (Phase 7, decision 14)**: `vanna_app`
+  is scoped to its own `vanna` schema via `search_path` + schema-level GRANT,
+  with explicit defensive REVOKEs on the 6 sensitive tables — verified
+  structurally (`has_table_privilege`), not by convention, both locally and
+  on Railway.
 - **Financial data rows never touch the Railway metadata Postgres.** Only
   schema/training/text metadata belongs there.
 
@@ -1103,12 +1241,14 @@ requirements, not suggestions:
 | `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
 | `server/src/config/mssql.ts` | Originated in Phase 3 (decision 10) with a hardcoded single target and `getMssqlPool()`; trimmed in Phase 4 (decision 13) to just `buildPoolConfig()` and the `MssqlAuthConfig`/`MssqlTargetConfig` types — `server/src/tenant/connectionResolver.ts` owns per-company pool creation/caching now |
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
-| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Being replaced by the Vanna-calling orchestrator — **keep the old tool-calling code until the Vanna path is verified end-to-end**, then remove |
+| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | The Vanna path is now **verified end-to-end** (Phase 7, decision 14's acceptance test) — the condition for removing this old tool-calling code is met, but it has **not been removed yet**: no chat-flow endpoint (`chat.controller.ts`) has been switched over to `vannaClient.ts` yet, so removing this now would break the live AI Chat feature. Wiring `vannaClient.ts` into the actual chat flow and then deleting this is follow-up work, not yet scheduled to a phase |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts` | Not started — the Node-side HTTP client that would call `vanna-service`'s `/generate-sql` (Phase 5 scope was the Python service only). When built, must call a generate-only method, never one that executes SQL |
-| `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | New (Phase 6) — done and verified (real T-SQL parsing, table *and column* allowlist enforced by rejection never rewrite, AST-level row cap as a deliberate exception to that, query timeout); see the Phase 6 status entry. Not yet called by any HTTP endpoint |
+| `server/src/agent/vannaClient.ts` | New (Phase 7, decision 14) — thin, stateless HTTP client, `generateSql(question)`, no company/tenant parameter, matches `GenerateSqlRequest`'s empty-of-company shape. Verified for real: the Phase 7 acceptance test call went through this exact function. Not yet called by `chat.controller.ts` — see the `sqlAgent.ts` row above |
+| `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | Phase 6 — done and verified (real T-SQL parsing, table *and column* allowlist enforced by rejection never rewrite, AST-level row cap as a deliberate exception to that, query timeout). Phase 7's acceptance test (decision 14) is the first time this guard validated genuine Vanna-generated SQL rather than hand-crafted test strings. Still not called by any HTTP endpoint — only by the acceptance test script and its own test suite |
 | `server/tsconfig.build.json` | New (Phase 6) — extends `tsconfig.json`, excludes `*.test.ts` from what `npm run build` emits to `dist/`; `tsconfig.json` itself is unchanged so `--noEmit` typechecking still covers test files |
-| `vanna-service/` | New (Phase 5) — separate Python (FastAPI) service, its own Railway service. `/generate-sql` (stubbed) + `/health` + an OpenRouter LLM connector, built and verified — see Phase 5's status entry. Does **not** depend on the `vanna` package yet (nothing imports it) |
+| `server/db/generateVannaTrainingData.ts` | New (Phase 7, decision 14) — generates curated per-table DDL (cross-referenced against `financialTables.ts`'s `columns` allowlist and `schema.mssql.sql`'s real column types, throws on a scoping mismatch) plus bilingual EN/PT example question/SQL pairs; writes `vanna-service/training_data.json` (gitignored, regenerable, not hand-edited) |
+| `server/db/setupVannaRole.ts` | New (Phase 7, decision 14) — idempotent `vanna_app` Postgres role/schema/GRANT setup + structural verification (`has_table_privilege`) against the 6 sensitive tables. Run separately per target (local, Railway) since it needs a real admin `DATABASE_URL` and a password that is deliberately never stored in any tracked file |
+| `vanna-service/` | Phase 5 scaffolding, **Phase 7 (decision 14) made real**: `app/vanna_client.py` (the real `NucaseVanna(OpenAI_Chat, PG_VectorStore)` class), `train.py` (idempotent training runner), `training_data.json` (generated, gitignored). `/generate-sql` now calls real `generate_sql()` — no more stub. `vanna` and its `langchain-*`/`psycopg2-binary` runtime deps are now in `requirements.txt` for real, not deferred |
 
 ---
 
@@ -1147,10 +1287,12 @@ requirements, not suggestions:
 7. **pgvector on the existing Railway Postgres.** Not a second Postgres
    service (decision 5's amendment) — training data lives alongside the
    Phase 4 tenant registry and chat history, with Vanna's own DB login
-   table-GRANT-restricted away from both (mandatory, see guardrails). Once
-   these tables exist, run the real training sub-step (schema embeddings,
-   decision 3) — this is what turns step 5's endpoint from a stub into the
-   real thing.
+   table-GRANT-restricted away from both (mandatory, see guardrails). Done —
+   see decision 14 for the full implementation and verification record: real
+   training run (7 tables' curated DDL + 18 bilingual question/SQL rows),
+   `/generate-sql` now calls real `generate_sql()`, `vannaClient.ts` built,
+   and the explicit acceptance test passed end-to-end against real Aurora
+   data.
 8. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
    firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
    was dropped from scope once Azure SQL Database (a public-endpoint PaaS

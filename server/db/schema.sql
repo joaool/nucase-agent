@@ -3,6 +3,15 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto; -- gen_random_uuid()
 
+-- Railway + Vanna migration, Phase 7 (see .claude/skills/railway-vanna-migration/SKILL.md).
+-- Vanna's training/vector data lives in its own schema on this same Postgres (decision 5's
+-- amendment), never `public` — the vanna_app role that owns it is created and scoped
+-- separately (server/db/setupVannaRole.ts, not here, since it needs a real password this
+-- tracked file must never contain). No CREATE EXTENSION vector here either — that's applied
+-- per-environment the same way (confirmed working against Railway's Postgres already;
+-- pgvector 0.8.6 is installed there).
+CREATE SCHEMA IF NOT EXISTS vanna;
+
 CREATE TABLE IF NOT EXISTS users (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email         TEXT UNIQUE NOT NULL,

@@ -3,17 +3,20 @@
 # service's code (verified via `pip install` + `pip freeze`, not guessed) — matches the intent
 # of server/package.json listing direct deps and letting pip/npm resolve transitives.
 #
-# `vanna` is deliberately NOT listed here yet: nothing in this service imports it in Phase 5
-# (see app/main.py and app/openrouter_llm.py's module docstrings) — it becomes a real dependency
-# starting Phase 7, once real generation code gets written. When it's added, note that the
-# installed `vanna` is now a 2.x release with a restructured package (a `vanna.legacy` module
-# preserves the 0.x-style `generate_sql()`/`ask()`/`VannaFlaskApp` API this skill's guardrails
-# are written against; a separate, unexplored `vanna.core`/`vanna.agents` architecture also
-# exists) — confirm which surface Phase 7 is targeting before assuming `vanna.legacy` is still
-# the only option.
+# Phase 7 (see SKILL.md): `vanna` is now a real dependency — built against `vanna.legacy`
+# (OpenAI_Chat + PG_VectorStore), not the separate vanna.core/vanna.agents architecture also
+# present in this 2.x release (see the Phase 7 entry for the researched reasoning). `vanna`
+# itself doesn't declare langchain-postgres/psycopg2-binary as install-time deps despite
+# vanna.legacy.pgvector needing both at runtime, so both are listed here explicitly too, not
+# left to transitive resolution. langchain-openai is imported directly (app/vanna_client.py,
+# for the OpenRouter-backed embedding function).
 fastapi==0.141.1
 uvicorn[standard]==0.52.4
 openai==3.7.0
 python-dotenv==1.2.3
 httpx==0.28.1
 pytest==9.1.1
+vanna==2.0.2
+langchain-openai==1.6.0
+langchain-postgres==0.0.17
+psycopg2-binary==2.9.12
