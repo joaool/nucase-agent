@@ -503,7 +503,23 @@ merged.
       dedicated to this app) — real defense-in-depth, but the actual
       security boundary remains per-tenant SQL auth credentials, not the IP
       allowlist alone.
-- [ ] Phase 10 — Client (React) updated, if response shapes changed at all
+- [x] Phase 10 — Client (React) updated, if response shapes changed at all.
+      **Verified 2026-09-04: no changes needed.** Checked every response
+      shape the client actually consumes against what the server now
+      returns post-migration: `FinancialTableData`
+      (`{label, columns, rows, rowCount}`) and `FinancialTab`
+      (`{key, label}`) — unchanged, and `DataTable.tsx` is genuinely
+      schema-agnostic (renders whatever `columns` it's given, no hardcoded
+      column names, matches the design decision 10 already relied on).
+      `ChatThread`/`ChatMessage`/`{userMessage, assistantMessage}` —
+      unchanged; `ChatMessageList.tsx` is equally agnostic to which engine
+      produced the content (`AI_CHAT_ENGINE` is a server-side-only concern,
+      invisible to the client). `User`/`Company` — untouched all migration.
+      Not just a code-reading exercise: this session's own real Financial
+      Data fetches and real chat usage through the actual deployed browser
+      UI (including the Phase 9 acceptance test and the CL0001/CL0002 bug
+      investigation) already exercised these exact shapes live, repeatedly,
+      without any client-side error.
 
 ---
 
@@ -1600,7 +1616,9 @@ requirements, not suggestions:
    decision 14, now closed) and the real deploy failures worked through
    along the way.
 10. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
-    changes; update only if response shapes moved.
+    changes; update only if response shapes moved. Done — verified no
+    response shape changed anywhere the client depends on; see the Phase 10
+    status entry for the full verification.
 
 ---
 
