@@ -36,4 +36,13 @@ export const env = {
   // fail to boot over this. vannaClient.ts throws a clear error only when generateSql() is
   // actually called and this is unset.
   vannaServiceUrl: process.env.VANNA_SERVICE_URL,
+  // Railway + Vanna migration, Phase 8 (see chat.controller.ts, decision 15). Selects which
+  // implementation answers AI Chat messages: the old tool-calling sqlAgent.ts (default — keeps
+  // production behavior unchanged) or the new Vanna-backed vannaAgent.ts. A safe, reversible
+  // cutover switch, not a new route or DB column — flip back by unsetting/changing this var,
+  // no code path removed. sqlAgent.ts/financialQueryTools.ts stay in place and load-bearing
+  // until vannaAgent.ts is verified end-to-end via the real acceptance test (see SKILL.md).
+  // Any value other than "vanna" falls back to "sql-agent" rather than throwing — a typo here
+  // should never take down AI Chat.
+  aiChatEngine: process.env.AI_CHAT_ENGINE === "vanna" ? "vanna" : ("sql-agent" as "sql-agent" | "vanna"),
 };

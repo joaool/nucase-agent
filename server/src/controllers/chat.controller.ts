@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
 import { pool } from "../config/db.js";
+import { env } from "../config/env.js";
 import { userCanAccessCompany } from "../utils/companyAccess.js";
 import { runFinancialAgent, type AgentHistoryMessage } from "../agent/sqlAgent.js";
+import { runVannaAgent } from "../agent/vannaAgent.js";
 
 // How many prior turns of the same thread to feed back to the agent as
 // conversation context. Kept small — this is context for the LLM prompt,
@@ -98,17 +100,24 @@ export async function postMessage(req: Request, res: Response) {
     [threadId, content]
   );
 
+  // Phase 8 (see .claude/skills/railway-vanna-migration/SKILL.md, decision 15): AI_CHAT_ENGINE
+  // selects which implementation answers this message. Both share the exact same call shape by
+  // design, so this branch is the entire cutover surface — no other change needed here to
+  // switch engines, and none of the code below (persistence, response shape) differs by engine.
+  const runAgent = env.aiChatEngine === "vanna" ? runVannaAgent : runFinancialAgent;
+
   let assistantReply: string;
   try {
-    assistantReply = await runFinancialAgent({
+    assistantReply = await runAgent({
       companyId: thread.company_id,
       companyName: thread.company_name,
       question: content,
       history,
     });
   } catch (err) {
-    // OpenRouter unreachable/misconfigured, etc. — the user's message is
-    // already saved, so still record a reply rather than 500ing the request.
+    // OpenRouter/vanna-service unreachable/misconfigured, etc. — the user's message is already
+    // saved, so still record a reply rather than 500ing the request. Same fallback message for
+    // either engine — see vannaAgent.ts's own doc comment for why it doesn't need a distinct one.
     console.error("Financial agent failed", err);
     assistantReply = "Sorry, I couldn't reach the analysis engine just now — please try again in a moment.";
   }
