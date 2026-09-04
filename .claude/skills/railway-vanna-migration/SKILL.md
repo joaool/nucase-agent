@@ -445,7 +445,20 @@ merged.
       `SELECT *` or reference out-of-allowlist columns, turning those
       rejections from a rare safety net into an ordinary, expected outcome.
       See Phase 6's entry for the full reasoning.
-- [ ] Phase 8 — Deployed to Railway (**Pro plan required** — Static Outbound
+- [ ] Phase 8 — Wire `vannaClient.ts` into the live AI Chat flow
+      (`chat.controller.ts`), replacing the old tool-calling
+      `sqlAgent.ts`/`financialQueryTools.ts` path, then remove that old
+      code once the swap is verified end-to-end over real HTTP requests
+      (not just the standalone acceptance test Phase 7 ran). **Added
+      2026-09-04** — this is the third case of a piece of necessary,
+      already-named work (`vannaClient.ts` itself, then `vanna-service`'s
+      own Railway deployment, now this) having no assigned phase; see the
+      new guardrail note below this checklist aimed at stopping that
+      pattern from recurring. Chronologically belongs before Phase 9
+      (Deploy): deploying with the old stub-agent chat flow still live
+      isn't a meaningful milestone once Vanna's path is verified working.
+      Not started.
+- [ ] Phase 9 — Deployed to Railway (**Pro plan required** — Static Outbound
       IPs is a paid-tier feature), Static Outbound IPs enabled on the
       nucase-web service, Azure SQL server firewall restricted to those
       specific IPs (replacing the demo's wide-open 0.0.0.0–255.255.255.255
@@ -457,8 +470,10 @@ merged.
       trade-off: Railway's static IPs are shared with other Railway Pro
       customers (not dedicated to this app) — real defense-in-depth, but the
       actual security boundary remains per-tenant SQL auth credentials, not
-      the IP allowlist alone.
-- [ ] Phase 9 — Client (React) updated, if response shapes changed at all
+      the IP allowlist alone. This includes deploying `vanna-service` itself
+      to Railway as a real service (deferred out of Phase 7's "Local first"
+      scope — see decision 14) — not just `nucase-web`.
+- [ ] Phase 10 — Client (React) updated, if response shapes changed at all
 
 ---
 
@@ -476,7 +491,7 @@ merged.
 tenant data source.** It exists solely to develop and test
 `schema.mssql.sql` locally. Every tenant's real Financial Data lives in
 *their own* Azure SQL Database, per the row above — reached in production
-over Railway's Static Outbound IPs against Azure's public endpoint (Phase 8),
+over Railway's Static Outbound IPs against Azure's public endpoint (Phase 9),
 never via the local Docker container. (This section originally described an
 on-premise-SQL-Server-plus-Tailscale-tunnel architecture — superseded by
 decision 12; see that decision for why.)
@@ -831,7 +846,12 @@ decision 12; see that decision for why.)
       connection timeout accordingly, and do one warm-up query a minute before presenting).
     - **Purpose at the time: demo only, not the long-term production target** — the target
       architecture then called for real clients' data on their own on-premise SQL Server,
-      reached via a Tailscale tunnel (Phase 8), with Azure here as a convenience stand-in so
+      reached via a Tailscale tunnel (the deploy phase — numbered Phase 8 at
+      the time this was written, now Phase 9 after the 2026-09-04
+      renumbering that inserted a new Phase 8 for AI Chat wiring; this
+      historical paragraph isn't updated to chase every future renumbering,
+      only this once so the number isn't actively wrong), with Azure here as
+      a convenience stand-in so
       a demo didn't depend on any one person's machine being online.
       **Superseded by decision 12**: Azure SQL Database is now the confirmed *production*
       target too, not just the demo's. This section is kept as-written for the historical
@@ -1181,9 +1201,10 @@ decision 12; see that decision for why.)
       standalone, matching the plan's own scope. The old tool-calling
       `sqlAgent.ts`/`financialQueryTools.ts` therefore stay in place, still
       backing the live AI Chat feature, even though the condition for
-      removing them ("Vanna path verified end-to-end") is now met. Deploying
-      `vanna-service` to Railway itself also remains deferred — Phase 8
-      territory, not this phase's "Local first" scope.
+      removing them ("Vanna path verified end-to-end") is now met — that
+      swap is now Phase 8's explicit scope (added 2026-09-04, see the Status
+      checklist). Deploying `vanna-service` to Railway itself also remains
+      deferred — Phase 9 territory, not this phase's "Local first" scope.
 
 ---
 
@@ -1223,6 +1244,15 @@ requirements, not suggestions:
   on Railway.
 - **Financial data rows never touch the Railway metadata Postgres.** Only
   schema/training/text metadata belongs there.
+- **Process rule, added 2026-09-04 after this recurred three times
+  (`vannaClient.ts`, `vanna-service`'s Railway deployment, and wiring
+  `vannaClient.ts` into live AI Chat all went unscheduled before being
+  caught):** when writing or closing out a phase's Status entry, explicitly
+  check whether every file, integration point, or follow-up action mentioned
+  in that entry's own write-up has an assigned phase — including things
+  named only in passing ("not yet wired into X", "deferred to later"). If
+  one doesn't, give it one in the same edit (fold into an existing phase's
+  scope, or add a new one) rather than leaving it to be discovered later.
 
 ---
 
@@ -1241,9 +1271,9 @@ requirements, not suggestions:
 | `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
 | `server/src/config/mssql.ts` | Originated in Phase 3 (decision 10) with a hardcoded single target and `getMssqlPool()`; trimmed in Phase 4 (decision 13) to just `buildPoolConfig()` and the `MssqlAuthConfig`/`MssqlTargetConfig` types — `server/src/tenant/connectionResolver.ts` owns per-company pool creation/caching now |
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
-| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | The Vanna path is now **verified end-to-end** (Phase 7, decision 14's acceptance test) — the condition for removing this old tool-calling code is met, but it has **not been removed yet**: no chat-flow endpoint (`chat.controller.ts`) has been switched over to `vannaClient.ts` yet, so removing this now would break the live AI Chat feature. Wiring `vannaClient.ts` into the actual chat flow and then deleting this is follow-up work, not yet scheduled to a phase |
+| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | The Vanna path is now **verified end-to-end** (Phase 7, decision 14's acceptance test) — the condition for removing this old tool-calling code is met, but it has **not been removed yet**: no chat-flow endpoint (`chat.controller.ts`) has been switched over to `vannaClient.ts` yet, so removing this now would break the live AI Chat feature. **Phase 8's scope**: wire `vannaClient.ts` into the actual chat flow, verify over real HTTP, then delete this |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts` | New (Phase 7, decision 14) — thin, stateless HTTP client, `generateSql(question)`, no company/tenant parameter, matches `GenerateSqlRequest`'s empty-of-company shape. Verified for real: the Phase 7 acceptance test call went through this exact function. Not yet called by `chat.controller.ts` — see the `sqlAgent.ts` row above |
+| `server/src/agent/vannaClient.ts` | New (Phase 7, decision 14) — thin, stateless HTTP client, `generateSql(question)`, no company/tenant parameter, matches `GenerateSqlRequest`'s empty-of-company shape. Verified for real: the Phase 7 acceptance test call went through this exact function. Not yet called by `chat.controller.ts` — **Phase 8's scope**, see the `sqlAgent.ts` row above |
 | `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | Phase 6 — done and verified (real T-SQL parsing, table *and column* allowlist enforced by rejection never rewrite, AST-level row cap as a deliberate exception to that, query timeout). Phase 7's acceptance test (decision 14) is the first time this guard validated genuine Vanna-generated SQL rather than hand-crafted test strings. Still not called by any HTTP endpoint — only by the acceptance test script and its own test suite |
 | `server/tsconfig.build.json` | New (Phase 6) — extends `tsconfig.json`, excludes `*.test.ts` from what `npm run build` emits to `dist/`; `tsconfig.json` itself is unchanged so `--noEmit` typechecking still covers test files |
 | `server/db/generateVannaTrainingData.ts` | New (Phase 7, decision 14) — generates curated per-table DDL (cross-referenced against `financialTables.ts`'s `columns` allowlist and `schema.mssql.sql`'s real column types, throws on a scoping mismatch) plus bilingual EN/PT example question/SQL pairs; writes `vanna-service/training_data.json` (gitignored, regenerable, not hand-edited) |
@@ -1293,12 +1323,21 @@ requirements, not suggestions:
    `/generate-sql` now calls real `generate_sql()`, `vannaClient.ts` built,
    and the explicit acceptance test passed end-to-end against real Aurora
    data.
-8. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
+8. **Wire the real Vanna path into live AI Chat.** `chat.controller.ts` calls
+   `vannaClient.ts` instead of the old tool-calling `sqlAgent.ts`, verified
+   over real HTTP requests (not just Phase 7's standalone acceptance test);
+   then `sqlAgent.ts`/`financialQueryTools.ts` are deleted. **Added
+   2026-09-04** — not started. Belongs before Deploy: shipping the old
+   stub-agent chat flow to production isn't a meaningful milestone once
+   Vanna's generation path is already verified working end-to-end.
+9. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
    firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
    was dropped from scope once Azure SQL Database (a public-endpoint PaaS
    service) became the confirmed production target, not just the demo's.
-9. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
-   changes; update only if response shapes moved.
+   Includes deploying `vanna-service` itself to Railway as a real service —
+   deferred out of Phase 7's "Local first" scope (decision 14), not done yet.
+10. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
+    changes; update only if response shapes moved.
 
 ---
 
