@@ -488,21 +488,21 @@ merged.
       `sqlAgent.ts`/`financialQueryTools.ts` is a separate, deliberate
       cutover decision, not bundled into this verification step. Multi-turn
       history stays dropped for the Vanna path — see the Backlog entry.
-- [ ] Phase 9 — Deployed to Railway (**Pro plan required** — Static Outbound
-      IPs is a paid-tier feature), Static Outbound IPs enabled on the
-      nucase-web service, Azure SQL server firewall restricted to those
-      specific IPs (replacing the demo's wide-open 0.0.0.0–255.255.255.255
-      rule). **Tailscale dropped from scope entirely** — Azure SQL Database
-      is a public-endpoint PaaS service with built-in TLS, not a private
-      on-premise network to tunnel into; Tailscale's reason for existing in
-      this architecture no longer applies once production data lives on
-      Azure rather than each client's own premises. Note the residual
-      trade-off: Railway's static IPs are shared with other Railway Pro
-      customers (not dedicated to this app) — real defense-in-depth, but the
-      actual security boundary remains per-tenant SQL auth credentials, not
-      the IP allowlist alone. This includes deploying `vanna-service` itself
-      to Railway as a real service (deferred out of Phase 7's "Local first"
-      scope — see decision 14) — not just `nucase-web`.
+- [x] Phase 9 — Deployed to Railway (**migration environment only** — confirmed
+      explicitly out of scope for merging to `main`/production, see the
+      Backlog entry), Static Outbound IPs enabled on `nucase-web`, Azure SQL
+      server firewall restricted to those specific IPs (replacing the demo's
+      wide-open 0.0.0.0–255.255.255.255 rule), `vanna-service` deployed as
+      its own private-network-only Railway service. **Built and verified
+      2026-09-04** — see decision 17 for the full record, including several
+      real deploy failures worked through in order, not glossed over.
+      **Tailscale dropped from scope entirely** — Azure SQL Database is a
+      public-endpoint PaaS service with built-in TLS, not a private
+      on-premise network to tunnel into. Note the residual trade-off:
+      Railway's static IPs are shared with other Railway Pro customers (not
+      dedicated to this app) — real defense-in-depth, but the actual
+      security boundary remains per-tenant SQL auth credentials, not the IP
+      allowlist alone.
 - [ ] Phase 10 — Client (React) updated, if response shapes changed at all
 
 ---
@@ -1357,6 +1357,104 @@ decision 12; see that decision for why.)
       now on, never rely on the ambient linked default. An explicit per-command flag survives a
       link drifting again for unrelated reasons; re-linking via `railway environment migration`
       would only fix the *current* drift, not prevent the next one.
+17. **Phase 9 implementation record — real deploy failures worked through in order, not
+    glossed over.** Executes the approved plan; scope confirmed as the `migration` environment
+    only (see the Backlog entry for the separate merge-to-`main` decision).
+
+    - **Static Outbound IPs**: enabled on `nucase-web` via
+      `railway outbound-network static-ip enable` — 3 IPs, High Availability
+      (`162.220.232.251`, `152.55.177.192`, `152.55.177.193`).
+    - **Azure SQL firewall restricted**: the user replaced the demo's wide-open
+      `0.0.0.0`–`255.255.255.255` rule with three rules, one per IP above.
+      **Verified for real, not assumed**: after redeploy, a real authenticated request through
+      the live deployed URL to `/api/financial/clients` returned genuine Aurora data
+      (`CL0001`/`CL0002`, real company names) — `200 OK`. First attempt timed out at 30s; that
+      was Azure SQL's documented serverless cold-start (up to 60s from idle), not a firewall
+      problem — a longer timeout succeeded cleanly.
+    - **Two small cleanup items, both done as agreed rather than left as-is**: the 7 stale
+      `MSSQL_APP_*` vars (dead since Phase 4's resolver replaced that hardcoded pattern) were
+      removed from `nucase-web`. The untracked `preDeployCommand` was reconciled into the root
+      `railway.json` — **and this turned out to matter for real**: `nucase-web`'s
+      `resolvedFileConfig` (queried directly via Railway's GraphQL API) confirms it actively
+      reads `/railway.json` from the repo root (`configFile: "/railway.json"`,
+      `fileManifest` matching the tracked file exactly) — a mid-session assumption that Railway's
+      "Config as Code" deprecation meant this file was inert everywhere was **wrong** and is
+      corrected here; the deprecation blocks new writes to `railwayConfigFile` via the API, it
+      does not stop already-configured services from reading their file.
+    - **`vanna-service` deployed as a new Railway service, private-network-only**: created via
+      `railway add --repo ... --service vanna-service`, `rootDirectory` set to `vanna-service/`
+      via the `serviceInstanceUpdate` GraphQL mutation (no CLI flag exposes this). **No public
+      domain** — deliberately: `/generate-sql` has zero authentication, so a public URL would
+      let anyone generate SQL against the trained schema without logging into the app at all.
+      One was accidentally auto-generated by a bare `railway domain` *status-check* command
+      (its own help text warns generating is the default behavior with no subcommand) — caught
+      and deleted immediately; nothing was ever live behind it. `VANNA_DATABASE_URL` set via
+      Railway's private network hostname (`postgres.railway.internal`), with `vanna_app`'s
+      password regenerated fresh and rotated **twice** during this phase — once for the initial
+      setup, and again after a `railway variable list --kv` call (its own documented behavior,
+      not a bug) printed it into a tool output; treated as exposed and rotated immediately
+      rather than left live, per the standing "never persist, regenerate when next needed"
+      policy extended to "never let it sit exposed once it has been," not just "never write it
+      to a file."
+    - **Five real deploy failures, root-caused in order, each with a concrete fix** — recorded
+      because a future reader hitting any of these on a fresh Railway Python service should not
+      have to rediscover them:
+      1. *"No start command detected"* — `vanna-service/railway.json` was silently never read at
+         all (`resolvedFileConfig.configFile: null` for this service, confirmed directly) — the
+         actual builder is **Railpack**, which has its own separate config file
+         (`railpack.json`, per railpack.com/config/file), unrelated to Railway's own
+         file-based config layer. Fixed by adding the correct file.
+      2. A stray `npm install && npm run build` step ran *alongside* the correctly-detected
+         Python steps in the same build, even with `provider: "python"` explicitly set and
+         `rootDirectory` correctly scoping the file copy (confirmed `requirements.txt`, not
+         `package.json`, was what got copied) — a Railpack cross-provider auto-detection quirk
+         that resisted several targeted fixes. Root cause not fully pinned down; rather than
+         keep guessing at underdocumented Railpack internals, **switched to an explicit
+         Dockerfile** for full, unambiguous control — the more decisive fix after the first
+         config-file issue had already cost one failed cycle.
+      3. Healthcheck failures with `Error: Invalid value for '--port': '$PORT' is not a valid
+         integer` — the Dockerfile's own `CMD ["sh", "-c", "... --port $PORT"]` should expand
+         `$PORT` correctly, but the service's stored `startCommand` (set earlier, before the
+         Dockerfile switch) was overriding `CMD` — and empirically, Railway's execution of a
+         stored `startCommand` string is **not reliably run through a shell**: neither clearing
+         the field (`null`, then `""` — both silently accepted by the API but had no effect on
+         the next deployment's resolved value) nor explicitly re-wrapping it in `sh -c "..."`
+         changed the identical failure. **Fixed by sidestepping shell expansion entirely**:
+         `app/main.py` gained a `__main__` block reading `os.environ["PORT"]` directly in
+         Python (works regardless of how the process was actually launched), and both the
+         Dockerfile `CMD` and the stored `startCommand` were set to `python -m app.main` — a
+         command with no `$` character in it at all, immune to whichever shell-expansion gap
+         was the real cause.
+      4. Confirmed clean afterward: `Uvicorn running on http://0.0.0.0:8080`, `GET /health` ->
+         `200 OK`, in the real deployment logs.
+    - **Bounded acceptance test — run for real, exact result logged, window closed
+      immediately after**: `AI_CHAT_ENGINE=vanna` and `VANNA_SERVICE_URL=http://vanna-service.
+      railway.internal:8080` set on `nucase-web`, redeployed, one real message sent through the
+      real public URL (`POST /api/chat/threads/:id/messages`, `"What is the credit limit for
+      client CL0001?"`), then **both variables removed and `nucase-web` redeployed again
+      immediately** — confirmed reverted by re-querying (not assuming the delete calls alone
+      were enough: they did not trigger a fresh deploy on their own, an explicit `railway
+      redeploy` was needed to actually apply the reverted environment to the running instance)
+      and by a real functional check afterward (a plain `"test"` message got a real,
+      contextual `sqlAgent.ts`-style reply in ~5s — proof the live instance is genuinely back
+      on the old engine, not just that the stored variable is gone).
+
+      **Result, reported honestly rather than rounded up to a clean pass**: the pipeline worked
+      completely end-to-end — real `generateSql()` call to the deployed `vanna-service` over
+      Railway's private network, real `executeGuardedQuery()` against Aurora's Azure SQL
+      Database, real `narrateQueryResult()` OpenRouter call, real persisted `chat_messages`
+      row. But the narrated answer was *"No matching data was found for client CL0001..."* —
+      despite the REST endpoint confirming, minutes earlier on this exact same company and
+      Postgres, that `CL0001` genuinely exists and is reachable. This is not a guard rejection
+      (that produces a different, distinct message) and not an infrastructure failure — the
+      query executed and returned zero rows for some reason not investigated further here (the
+      generated SQL text itself wasn't captured/logged by this test). **Deliberately not
+      chased down further in this phase**: Phase 9's scope was proving the deployed
+      infrastructure path works end-to-end, which it does; a content-accuracy question like
+      this is exactly what the `AI_CHAT_ENGINE` cutover bar's 30-real-question requirement
+      exists to surface and catch, not something to debug live under a self-imposed toggle-window
+      time pressure. Noted here plainly so it isn't lost, not smoothed over as an unqualified
+      success.
 
 ---
 
@@ -1438,7 +1536,7 @@ requirements, not suggestions:
 | `server/tsconfig.build.json` | New (Phase 6) — extends `tsconfig.json`, excludes `*.test.ts` from what `npm run build` emits to `dist/`; `tsconfig.json` itself is unchanged so `--noEmit` typechecking still covers test files |
 | `server/db/generateVannaTrainingData.ts` | New (Phase 7, decision 14) — generates curated per-table DDL (cross-referenced against `financialTables.ts`'s `columns` allowlist and `schema.mssql.sql`'s real column types, throws on a scoping mismatch) plus bilingual EN/PT example question/SQL pairs; writes `vanna-service/training_data.json` (gitignored, regenerable, not hand-edited) |
 | `server/db/setupVannaRole.ts` | New (Phase 7, decision 14) — idempotent `vanna_app` Postgres role/schema/GRANT setup + structural verification (`has_table_privilege`) against the 6 sensitive tables. Run separately per target (local, Railway) since it needs a real admin `DATABASE_URL` and a password that is deliberately never stored in any tracked file |
-| `vanna-service/` | Phase 5 scaffolding, **Phase 7 (decision 14) made real**: `app/vanna_client.py` (the real `NucaseVanna(OpenAI_Chat, PG_VectorStore)` class), `train.py` (idempotent training runner), `training_data.json` (generated, gitignored). `/generate-sql` now calls real `generate_sql()` — no more stub. `vanna` and its `langchain-*`/`psycopg2-binary` runtime deps are now in `requirements.txt` for real, not deferred |
+| `vanna-service/` | Phase 5 scaffolding, **Phase 7 (decision 14) made real**: `app/vanna_client.py` (the real `NucaseVanna(OpenAI_Chat, PG_VectorStore)` class), `train.py` (idempotent training runner), `training_data.json` (generated, gitignored). `/generate-sql` now calls real `generate_sql()` — no more stub. `vanna` and its `langchain-*`/`psycopg2-binary` runtime deps are now in `requirements.txt` for real, not deferred. **Phase 9 (decision 17)**: deployed as its own Railway service — `Dockerfile` (not Railpack, see decision 17's 5 numbered deploy-failure fixes), `app/main.py` gained a `__main__` block reading `$PORT` from `os.environ` directly (sidesteps a Railway `startCommand` shell-expansion gap). No public domain — private-network-only |
 
 ---
 
@@ -1496,8 +1594,12 @@ requirements, not suggestions:
    firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
    was dropped from scope once Azure SQL Database (a public-endpoint PaaS
    service) became the confirmed production target, not just the demo's.
-   Includes deploying `vanna-service` itself to Railway as a real service —
-   deferred out of Phase 7's "Local first" scope (decision 14), not done yet.
+   Done, scoped to the `migration` environment only (see the Backlog entry
+   for the separate merge-to-`main` decision) — see decision 17 for the full
+   record, including `vanna-service` now deployed as a real, private-network-
+   only Railway service (deferred out of Phase 7's "Local first" scope,
+   decision 14, now closed) and the real deploy failures worked through
+   along the way.
 10. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
     changes; update only if response shapes moved.
 
