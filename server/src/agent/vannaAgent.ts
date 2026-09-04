@@ -40,8 +40,15 @@ export async function runVannaAgent(params: RunVannaAgentParams): Promise<string
   const { companyId, companyName, question } = params;
 
   const { sql } = await generateSql(question);
+  // Diagnostic logging, added 2026-09-04 after two consecutive "no matching data" reports for
+  // real, existing clients (CL0001, CL0002) with no way to see what Vanna actually generated —
+  // deliberately logs on every call, not just failures, since "zero rows for a question that
+  // should have matched" isn't an exception the code above can detect on its own. Question text
+  // and SQL only — never companyId (decision 4) — and this is server-side console output, never
+  // surfaced to the user.
+  console.log(`[vannaAgent] question=${JSON.stringify(question)} generatedSql=${JSON.stringify(sql)}`);
 
-  let result: { columns: string[]; rows: Record<string, unknown>[] };
+  let result: { columns: string[]; rows: Record<string, unknown>[]; executedSql: string };
   try {
     result = await executeGuardedQuery(companyId, sql);
   } catch (err) {
@@ -54,6 +61,10 @@ export async function runVannaAgent(params: RunVannaAgentParams): Promise<string
     }
     throw err;
   }
+
+  console.log(
+    `[vannaAgent] executedSql=${JSON.stringify(result.executedSql)} rowCount=${result.rows.length}`
+  );
 
   return narrateQueryResult({
     question,

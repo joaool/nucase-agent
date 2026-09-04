@@ -235,11 +235,16 @@ export async function executeGuardedQuery(
   companyId: string,
   rawSql: string,
   rowCap: number = DEFAULT_ROW_CAP
-): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
+): Promise<{ columns: string[]; rows: Record<string, unknown>[]; executedSql: string }> {
   const cappedSql = validateAndCapQuery(rawSql, rowCap);
   const pool = await getMssqlPoolForCompany(companyId);
   const request = pool.request();
   const result = await executeWithTimeout<Record<string, unknown>>(request, cappedSql, QUERY_TIMEOUT_MS);
   const columns = Object.keys(result.recordset.columns ?? {});
-  return { columns, rows: result.recordset };
+  // executedSql is the byte-identical, TOP-capped query that actually ran — distinct from
+  // rawSql (Vanna's original output before the cap was injected). Returned mainly so callers
+  // can log/diagnose what really executed, not just what was requested — see vannaAgent.ts's
+  // diagnostic logging, added after two "no matching data" reports that turned out to need
+  // this to investigate at all.
+  return { columns, rows: result.recordset, executedSql: cappedSql };
 }
