@@ -1280,6 +1280,50 @@ decision 12; see that decision for why.)
       their financial data — the same category of disclosure the earlier
       BAA/ISO 27001/retention conversations already established applies to
       this system, not a new category of exception for Vanna specifically.
+16. **Incident, 2026-09-04: a misdirected Railway CLI tunnel hit `production`'s Postgres
+    instead of `migration`'s, during Phase 8 setup — root-caused and closed with a process
+    guardrail, not just patched once.**
+
+    - **What happened**: `railway connect Postgres --tunnel-only` (bare, no `--environment`
+      flag — the same form used successfully in every earlier session of this migration) was
+      run to reach `migration`'s Postgres for the Phase 8 acceptance test. It connected to
+      `production`'s Postgres instead. `server/db/setupVannaRole.ts` was then run against it
+      (also bare, same password-regeneration flow used successfully before), got partway
+      through — `CREATE SCHEMA vanna`, `CREATE ROLE vanna_app`, its `search_path`, and its
+      schema-level `GRANT`/`ALTER DEFAULT PRIVILEGES` all succeeded on **production** — before
+      failing on `REVOKE ALL ON tenant_connections, ... FROM vanna_app` with
+      `relation "tenant_connections" does not exist` (that table has never existed on
+      production — it's `migration`-only, per decision 5's amendment/decision 13). The failure
+      itself is what surfaced the mistake; nothing about it was silent.
+    - **Root cause, verified not guessed**: `railway connect --help` confirms
+      `-e, --environment <ENVIRONMENT>` "defaults to linked environment" when omitted — an
+      ambient, persistent piece of CLI state on this machine (confirmed via `railway status`
+      and `railway environment list --json`: `production` was `isLinked: true`, `migration`
+      `isLinked: false`, at the time of the incident), not scoped to this repo (`.railway/`
+      here is empty — no per-project link file to have drifted). Exactly when/why the linked
+      default changed from `migration` (used successfully in every earlier session) to
+      `production` couldn't be pinned down further — no local history to inspect — but the
+      mechanism is fully explained: any bare Railway CLI command on this machine rides on
+      whatever is currently linked, and that can change for reasons unrelated to this
+      migration (checking on the live app, other project work) with no warning.
+    - **Real, concrete side effect — not just a close call**: a `vanna` schema and `vanna_app`
+      role existed on **production**'s Postgres, however briefly. Nothing inside `schema vanna`
+      was ever created (the failure happened before anything used it), and the tables it never
+      got to `REVOKE` from never existed on production to begin with — but `vanna_app` did
+      briefly exist as a live login on the production database with default schema-`public`
+      privileges never explicitly revoked (the `REVOKE ALL ON SCHEMA public` step is exactly
+      the one that never ran). **Cleaned up for real, by the user, verified structurally, not
+      just asserted**: `REVOKE ALL ON SCHEMA public FROM vanna_app` → `DROP OWNED BY vanna_app`
+      → `DROP SCHEMA IF EXISTS vanna` (deliberately not `CASCADE` — would have failed loudly
+      instead of silently deleting something unexpected, had anything been there) →
+      `DROP ROLE IF EXISTS vanna_app`. Verified after: `vanna_app role still exists: false`,
+      `vanna schema still exists: false`, both queried directly against production, not
+      inferred from the drop commands not erroring.
+    - **Process fix — added as a guardrail below, not left as a one-off lesson**: every Railway
+      CLI command touching this migration must pass `--environment migration` explicitly from
+      now on, never rely on the ambient linked default. An explicit per-command flag survives a
+      link drifting again for unrelated reasons; re-linking via `railway environment migration`
+      would only fix the *current* drift, not prevent the next one.
 
 ---
 
@@ -1328,6 +1372,13 @@ requirements, not suggestions:
   named only in passing ("not yet wired into X", "deferred to later"). If
   one doesn't, give it one in the same edit (fold into an existing phase's
   scope, or add a new one) rather than leaving it to be discovered later.
+- **Process rule, added 2026-09-04 after decision 16's incident (a misdirected tunnel briefly
+  created a stray role/schema on production's Postgres): every Railway CLI command touching
+  this migration must pass `--environment migration` explicitly** — e.g.
+  `railway connect Postgres --tunnel-only --environment migration`, never the bare form. The
+  CLI's linked environment is ambient, persistent state on the operator's machine, not scoped
+  to this repo, and can drift for reasons unrelated to this migration entirely (see decision
+  16) — an explicit flag is what actually survives that, not remembering to re-link first.
 
 ---
 
