@@ -445,19 +445,49 @@ merged.
       `SELECT *` or reference out-of-allowlist columns, turning those
       rejections from a rare safety net into an ordinary, expected outcome.
       See Phase 6's entry for the full reasoning.
-- [ ] Phase 8 — Wire `vannaClient.ts` into the live AI Chat flow
-      (`chat.controller.ts`), replacing the old tool-calling
-      `sqlAgent.ts`/`financialQueryTools.ts` path, then remove that old
-      code once the swap is verified end-to-end over real HTTP requests
-      (not just the standalone acceptance test Phase 7 ran). **Added
-      2026-09-04** — this is the third case of a piece of necessary,
-      already-named work (`vannaClient.ts` itself, then `vanna-service`'s
-      own Railway deployment, now this) having no assigned phase; see the
-      new guardrail note below this checklist aimed at stopping that
-      pattern from recurring. Chronologically belongs before Phase 9
-      (Deploy): deploying with the old stub-agent chat flow still live
-      isn't a meaningful milestone once Vanna's path is verified working.
-      Not started.
+- [x] Phase 8 — Wire `vannaClient.ts` into the live AI Chat flow
+      (`chat.controller.ts`), verified end-to-end over real HTTP requests.
+      **Built and verified 2026-09-04** — see decisions 15/16 for the data-
+      boundary design and the production-tunnel incident hit along the way.
+
+      **Built**: `server/src/agent/narrateQueryResult.ts` (the second
+      OpenRouter call that closes the row-to-prose gap — decision 2's
+      pattern, `MAX_NARRATION_ROWS = 50`, never receives `companyId`) and
+      `server/src/agent/vannaAgent.ts` (`runVannaAgent()`, same call shape
+      as `runFinancialAgent()`, composes `generateSql()` ->
+      `executeGuardedQuery()` -> `narrateQueryResult()`, catches
+      `GuardViolationError` and returns a safe generic message). New
+      `AI_CHAT_ENGINE` env var (`"sql-agent"` default | `"vanna"`) —
+      `chat.controller.ts` branches on it; both functions share one call
+      shape so the branch is the entire cutover surface. Unit suite
+      (`vannaAgent.test.ts`) covers row-truncation formatting, date
+      formatting, and the `GuardViolationError` -> safe-message mapping
+      without needing live infra. 37/37 tests pass, build clean.
+
+      **Acceptance test run for real, exact output logged**: with
+      `AI_CHAT_ENGINE=vanna`, a temporary local server instance, and
+      `vanna-service` running locally against Railway's trained Postgres
+      (via the `migration`-environment tunnel — see decision 16 for why
+      that environment flag is now always explicit) — real login as the
+      demo user, real `POST /api/chat/threads` for Aurora, real
+      `POST /api/chat/threads/:id/messages` with
+      `"What is the credit limit for client CL0001?"`:
+      ```
+      assistantMessage.content:
+      "The credit limit for client CL0001 is **0** (zero).
+
+      This means this client currently has no credit limit assigned in the system."
+      ```
+      Persisted correctly via the existing, unchanged `chat_messages` insert
+      — no schema change was needed (confirmed during planning: `content` is
+      a plain string either engine can produce).
+
+      **Deliberately not done in this phase**: `AI_CHAT_ENGINE` still
+      defaults to `"sql-agent"` — the live/default chat behavior is
+      unchanged. Flipping the default and deleting
+      `sqlAgent.ts`/`financialQueryTools.ts` is a separate, deliberate
+      cutover decision, not bundled into this verification step. Multi-turn
+      history stays dropped for the Vanna path — see the Backlog entry.
 - [ ] Phase 9 — Deployed to Railway (**Pro plan required** — Static Outbound
       IPs is a paid-tier feature), Static Outbound IPs enabled on the
       nucase-web service, Azure SQL server firewall restricted to those
@@ -1400,9 +1430,10 @@ requirements, not suggestions:
 | `server/src/config/financialTables.ts` | Repointed at the real 7-table PRIEXPRESS mapping (decision 7), now with a curated `columns`/`orderBy` allowlist per table (decision 10) — done |
 | `server/src/config/mssql.ts` | Originated in Phase 3 (decision 10) with a hardcoded single target and `getMssqlPool()`; trimmed in Phase 4 (decision 13) to just `buildPoolConfig()` and the `MssqlAuthConfig`/`MssqlTargetConfig` types — `server/src/tenant/connectionResolver.ts` owns per-company pool creation/caching now |
 | `server/src/controllers/financialData.controller.ts` | Rewritten for Phase 3 (decision 10) — queries SQL Server via `mssql.ts`, no longer Postgres/`pg`; verified end-to-end |
-| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | The Vanna path is now **verified end-to-end** (Phase 7, decision 14's acceptance test) — the condition for removing this old tool-calling code is met, but it has **not been removed yet**: no chat-flow endpoint (`chat.controller.ts`) has been switched over to `vannaClient.ts` yet, so removing this now would break the live AI Chat feature. **Phase 8's scope**: wire `vannaClient.ts` into the actual chat flow, verify over real HTTP, then delete this |
+| `server/src/agent/sqlAgent.ts`, `financialQueryTools.ts` | Still in place and still the **default** (`AI_CHAT_ENGINE` defaults to `"sql-agent"`) — Phase 8 verified the Vanna path end-to-end over real HTTP but deliberately didn't flip the default or delete this code in the same step (a separate cutover decision). Safe to delete once that cutover happens |
 | `server/src/tenant/connectionResolver.ts` | New (Phase 4, decision 13) — `getMssqlPoolForCompany(companyId)`, done and verified in production |
-| `server/src/agent/vannaClient.ts` | New (Phase 7, decision 14) — thin, stateless HTTP client, `generateSql(question)`, no company/tenant parameter, matches `GenerateSqlRequest`'s empty-of-company shape. Verified for real: the Phase 7 acceptance test call went through this exact function. Not yet called by `chat.controller.ts` — **Phase 8's scope**, see the `sqlAgent.ts` row above |
+| `server/src/agent/vannaClient.ts` | New (Phase 7, decision 14) — thin, stateless HTTP client, `generateSql(question)`, no company/tenant parameter, matches `GenerateSqlRequest`'s empty-of-company shape. Now called by `server/src/agent/vannaAgent.ts` (Phase 8), verified over a real HTTP round trip |
+| `server/src/agent/narrateQueryResult.ts`, `vannaAgent.ts`, `vannaAgent.test.ts` | New (Phase 8) — the row-to-prose narration step (decision 15) and the orchestrator (`runVannaAgent()`) wired into `chat.controller.ts` behind `AI_CHAT_ENGINE`. Verified end-to-end over a real HTTP chat request; see the Phase 8 status entry for the exact logged output |
 | `server/src/agent/executionGuard.ts`, `executionGuard.test.ts` | Phase 6 — done and verified (real T-SQL parsing, table *and column* allowlist enforced by rejection never rewrite, AST-level row cap as a deliberate exception to that, query timeout). Phase 7's acceptance test (decision 14) is the first time this guard validated genuine Vanna-generated SQL rather than hand-crafted test strings. Still not called by any HTTP endpoint — only by the acceptance test script and its own test suite |
 | `server/tsconfig.build.json` | New (Phase 6) — extends `tsconfig.json`, excludes `*.test.ts` from what `npm run build` emits to `dist/`; `tsconfig.json` itself is unchanged so `--noEmit` typechecking still covers test files |
 | `server/db/generateVannaTrainingData.ts` | New (Phase 7, decision 14) — generates curated per-table DDL (cross-referenced against `financialTables.ts`'s `columns` allowlist and `schema.mssql.sql`'s real column types, throws on a scoping mismatch) plus bilingual EN/PT example question/SQL pairs; writes `vanna-service/training_data.json` (gitignored, regenerable, not hand-edited) |
@@ -1453,12 +1484,14 @@ requirements, not suggestions:
    and the explicit acceptance test passed end-to-end against real Aurora
    data.
 8. **Wire the real Vanna path into live AI Chat.** `chat.controller.ts` calls
-   `vannaClient.ts` instead of the old tool-calling `sqlAgent.ts`, verified
-   over real HTTP requests (not just Phase 7's standalone acceptance test);
-   then `sqlAgent.ts`/`financialQueryTools.ts` are deleted. **Added
-   2026-09-04** — not started. Belongs before Deploy: shipping the old
-   stub-agent chat flow to production isn't a meaningful milestone once
-   Vanna's generation path is already verified working end-to-end.
+   the new Vanna-backed path instead of the old tool-calling `sqlAgent.ts`,
+   verified over real HTTP requests (not just Phase 7's standalone acceptance
+   test). Done — see the Phase 8 status entry for the exact logged
+   acceptance-test output and decisions 15/16 for the data-boundary design
+   and the production-tunnel incident hit along the way. `AI_CHAT_ENGINE`
+   still defaults to the old engine and `sqlAgent.ts`/`financialQueryTools.ts`
+   are still in place — flipping the default and deleting them is a
+   deliberately separate, not-yet-made cutover decision.
 9. **Deploy.** Railway hosting (Pro plan, for Static Outbound IPs), Azure SQL
    firewall allowlisted to those IPs — see decision 12. No tunnel: Tailscale
    was dropped from scope once Azure SQL Database (a public-endpoint PaaS
