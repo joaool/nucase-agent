@@ -25,10 +25,22 @@ describe("serializeRowsForNarration", () => {
     assert.match(result, /CL0001 \| 0/);
   });
 
-  test("null/undefined cells render as empty, not the strings 'null'/'undefined'", () => {
+  test("null/undefined cells render as an explicit 'NULL' marker, not a blank cell", () => {
+    // Regression test for a real bug (found 2026-09-04): rendering null as "" made a genuine
+    // 1-row result with a null column indistinguishable from a zero-row result at the
+    // rendered-table level (header + separator + a blank line reads as "no data" to the
+    // narration model) — it incorrectly told real users "no matching data was found" for
+    // real, existing clients (CL0001, CL0002) whose LimiteCred is legitimately unset.
     const result = serializeRowsForNarration(["Nome"], [{ Nome: null }]);
-    assert.doesNotMatch(result, /null/);
-    assert.doesNotMatch(result, /undefined/);
+    assert.match(result, /NULL/);
+  });
+
+  test("a single row whose only column is null is clearly distinguishable from zero rows", () => {
+    const zeroRows = serializeRowsForNarration(["LimiteCred"], []);
+    const oneNullRow = serializeRowsForNarration(["LimiteCred"], [{ LimiteCred: null }]);
+    assert.notEqual(oneNullRow, zeroRows);
+    assert.match(oneNullRow, /LimiteCred/);
+    assert.match(oneNullRow, /NULL/);
   });
 
   test("Date values format as YYYY-MM-DD via UTC getters, not a verbose Date.toString()", () => {

@@ -42,7 +42,14 @@ export interface NarrateQueryResultParams {
 // a calendar date business-wise, never a specific time-of-day, so this is the correct format
 // here too, not just a borrowed convention.
 function formatValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
+  // Real bug, found 2026-09-04: rendering null as "" made a genuine 1-row result with a null
+  // column (e.g. LimiteCred legitimately unset for a real client) indistinguishable, at the
+  // rendered-table level, from a zero-row result — a header, a separator, and a blank line
+  // reads as "no data" to the narration model, which then incorrectly said "no matching data
+  // was found" for a client that does exist. "NULL" is unambiguous — the prompt already shows
+  // the model real SQL syntax in the same message, so it reads naturally as a database NULL,
+  // not as string data that happens to say "NULL".
+  if (value === null || value === undefined) return "NULL";
   if (value instanceof Date) {
     return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
   }
