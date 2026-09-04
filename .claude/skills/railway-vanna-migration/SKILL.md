@@ -1660,6 +1660,34 @@ moment it's actually being worked, never be closed by just deleting the bullet._
     unpatched defect. A one-off transient infra hiccup that succeeds on retry (e.g. an Azure
     cold-start timeout, already a documented, accepted characteristic) does not reset the count.
 
+  **`AI_CHAT_ENGINE=vanna` set as the persistent default on `migration`'s `nucase-web`,
+  2026-09-04** — not just another bounded toggle test. Reason: real-world testing on
+  `migration` (see the discovery immediately below) found the `sql-agent` fallback has been
+  silently broken there since Phase 3, so leaving it as the default was actively routing real
+  usage to a non-functional path rather than a merely-unproven one. Switching the default lets
+  today's and future real usage start counting toward the 30-question bar above immediately,
+  instead of requiring a separate, deliberate toggle-and-revert each session.
+
+  **Discovery, 2026-09-04 — the `sql-agent` fallback has been silently non-functional on
+  `migration` since Phase 3, the entire time it's been the default.** `financialQueryTools.ts`
+  (the old chat agent's tool implementation) still queries **Postgres** directly
+  (`import { pool } from "../config/db.js"`), and its `getQueryableColumns()` runs
+  `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND
+  table_name = $1` against whatever `FINANCIAL_TABLES` (`financialTables.ts`) says a table's
+  name is. But decision 7 (Phase 3) repointed `FINANCIAL_TABLES` at real SQL Server table names
+  like `dbo.Funcionarios` — so this has been asking **Postgres** for a table literally named
+  `dbo.Funcionarios`, which doesn't exist and never will (that table lives on Azure SQL).
+  Always returns zero columns; every `describe_table`/`query_rows`/`aggregate` call has been
+  silently failing since Phase 3. `financialData.controller.ts` (the REST endpoint) **was**
+  correctly rewired to SQL Server in that same phase — only the chat tool file was missed, and
+  nothing since then exercised the old chat path against real data to catch it (all later work
+  focused on the new Vanna path). **Deliberately not fixed** — `financialQueryTools.ts`/
+  `sqlAgent.ts` are scheduled for deletion at this same cutover, not worth real engineering
+  effort for code being deleted regardless. **Real production (`main`) is unaffected** — it
+  still has the old, pre-migration `FINANCIAL_TABLES` (Postgres table names), so its chat agent
+  genuinely still works there; this bug is specific to `migration`'s repointed config. See the
+  merge-to-`main` backlog item below for the precondition this discovery adds.
+
   **Session log** (append as sessions happen; empty until the user starts):
   _None yet._
 
@@ -1686,6 +1714,18 @@ moment it's actually being worked, never be closed by just deleting the bullet._
   would put real traffic behind the demo's current wide-open Azure firewall rule. Recorded here
   as a reasonable assumption, not a confirmed decision the way the `AI_CHAT_ENGINE` dependency
   above is.
+
+  **Third dependency, explicit precondition added 2026-09-04**: the `AI_CHAT_ENGINE` mechanism's
+  whole premise is that flipping it back to `"sql-agent"` is a safe, reversible fallback — but
+  the discovery above (the `sql-agent` path has been silently non-functional on `migration`
+  since Phase 3, undetected the entire time it was the default there) proves that assumption
+  was never actually verified, just assumed. **Before Vanna becomes the default in real
+  production, explicitly verify the `sql-agent` fallback is genuinely functional there** — run
+  a real question through it on `main`/production with `AI_CHAT_ENGINE` unset or explicitly set
+  to `"sql-agent"`, don't assume it's fine merely because production's `FINANCIAL_TABLES` still
+  has the original Postgres table names (that's *why* it's likely still fine there, not proof
+  that it is). The fallback having quietly rotted once already, undetected, is exactly why this
+  needs a real check, not an inference.
 
 ---
 
