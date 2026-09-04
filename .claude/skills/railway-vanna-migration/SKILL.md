@@ -1205,6 +1205,81 @@ decision 12; see that decision for why.)
       swap is now Phase 8's explicit scope (added 2026-09-04, see the Status
       checklist). Deploying `vanna-service` to Railway itself also remains
       deferred — Phase 9 territory, not this phase's "Local first" scope.
+15. **Phase 8's narration step sends real tenant data values to OpenRouter —
+    the first point in this entire migration where that's true, and it gets
+    the same explicit scrutiny every other data-boundary claim here has
+    gotten (the dropped ISO 27001 claim, the BAA resolution, the "zero data
+    retention" framing revision when Vanna was chosen over Genie), not a
+    pass because it's an implementation detail inside a bigger plan.**
+
+    - **What changes, precisely**: every OpenRouter call before this one —
+      Phase 5's chat connector smoke test, Phase 7's training run, every
+      `generate_sql()` call — sent only schema (curated DDL), hand-authored
+      example question/SQL pairs, or a user's own natural-language question
+      text. None of those are real tenant financial data. `narrateQueryResult()`
+      (Phase 8) is different in kind, not degree: it serializes the *actual
+      rows* `executeGuardedQuery()` returns — real credit limits, real
+      balances, real names, whatever a tenant's own Azure SQL Database holds
+      for the columns/rows a query touched — into a prompt sent to
+      OpenRouter (and whichever model OpenRouter routes it to) to generate
+      the narrated answer.
+    - **Mitigations in place, stated plainly rather than implied**:
+      - Row count into that specific prompt is capped by `MAX_NARRATION_ROWS`
+        (50) — distinct from, and tighter than, the execution guard's
+        500-row `DEFAULT_ROW_CAP` on the query itself.
+      - Column exposure per row is already bounded by Phase 6's
+        column-level allowlist (never more than a table's curated
+        `financialTables.ts` columns — at most ~15, never the real
+        table's 78–249) before narration ever sees it; `SELECT *`/`t.*` is
+        structurally impossible to reach this step at all (rejected by the
+        guard before execution).
+      - No data persistence beyond the single request/response — this call
+        is a plain, stateless OpenRouter chat completion, the same
+        integration pattern as decision 2, with nothing about it opting
+        into training-data retention on OpenRouter's/the upstream model
+        provider's side beyond whatever their standard API terms already
+        say for every other call this app already makes.
+      - Scope is narrow and specific: only the rows a tenant's *own*,
+        already-guard-validated query returned, for that tenant's own chat
+        request — not a bulk export, not cross-tenant, not persisted
+        anywhere new (`chat_messages` stores only the final narrated
+        sentence, per the schema — see the Phase 8 status entry).
+    - **Row-narrowing evaluated, not assumed**: considered serializing only
+      the column(s) actually relevant to the question (e.g. `LimiteCred`
+      alone for a credit-limit question) rather than every column
+      `executeGuardedQuery()` returned. Concluded this isn't a straightforward
+      win and isn't done: reliably identifying "the relevant column(s)"
+      needs either another LLM call (added cost/latency/complexity for
+      marginal benefit) or a keyword-heuristic against the question text
+      (fragile — risks silently dropping a column the narration genuinely
+      needed, a correctness regression in exchange for an uncertain privacy
+      gain). In practice the returned columns are *already* narrowed twice
+      over before narration sees them: by whatever Vanna's own generated
+      `SELECT` list chose (its training data consistently selects narrow,
+      targeted columns, not broad multi-column reads) and by Phase 6's
+      column allowlist ceiling regardless. Proceeding with full-result
+      serialization (bounded by the caps above), not adding a third
+      narrowing pass.
+    - **"Never fabricate" is advisory, not structural — do not conflate the
+      two.** The narration system prompt instructs the model not to
+      fabricate numbers and to say plainly when there's no data. That is a
+      prompt-level instruction to a general-purpose LLM, with no code-level
+      check behind it — nothing like Phase 6's `ast.type !== "select"`
+      check, which is a structural guarantee independent of any model's
+      behavior. A future model response could still, in principle, narrate
+      something not actually present in the rows it was given. This is an
+      accepted, named limitation of the narration step specifically — it
+      does not weaken the execution guard's own guarantees (which apply to
+      what SQL runs, not what a model says about the results afterward),
+      but it means "the assistant's prose is trustworthy" is a materially
+      weaker claim than "the guard only lets safe SQL execute."
+    - **Disclosure**: this data flow (real tenant financial values leaving
+      this app's infrastructure to OpenRouter, and whichever upstream model
+      it routes to, for narration) should be disclosed as part of the
+      architecture to any client with confidentiality requirements around
+      their financial data — the same category of disclosure the earlier
+      BAA/ISO 27001/retention conversations already established applies to
+      this system, not a new category of exception for Vanna specifically.
 
 ---
 
@@ -1338,6 +1413,29 @@ requirements, not suggestions:
    deferred out of Phase 7's "Local first" scope (decision 14), not done yet.
 10. **Client check.** Confirm React/Tailwind/Auth/CompanyContext need no
     changes; update only if response shapes moved.
+
+---
+
+## Backlog
+
+_Deliberately distinct from "Open questions" below — these are known, scoped-out gaps with a
+clear description of what closing them would take, not unresolved architecture questions
+blocking anything. Each entry must name why it's not phase-assigned yet and what would trigger
+picking it up; an entry should move out of this section into an existing or new phase the
+moment it's actually being worked, never be closed by just deleting the bullet._
+
+- **Multi-turn conversation history for the Vanna chat path.** Explicitly dropped in Phase 8
+  (decision 15's neighbor — see the `AI_CHAT_ENGINE=vanna` path in the Phase 8 status entry),
+  not silently regressed: `vanna-service`'s `/generate-sql` takes only a bare `question` string
+  with no session/history concept, and Vanna's training data (Phase 7) is standalone Q/SQL
+  pairs, not multi-turn examples — concatenating prior turns into the question string risks
+  degrading generation accuracy for a feature no phase's acceptance test has required so far.
+  **This is a genuine feature gap versus the code it replaces**: `sqlAgent.ts`'s tool-calling
+  loop feeds `AGENT_HISTORY_LIMIT` (10) prior turns as real conversation context today.
+  **Trigger to pick this up**: either real usage surfaces follow-up questions ("what about last
+  month?") failing noticeably under `AI_CHAT_ENGINE=vanna`, or `sqlAgent.ts` is actually being
+  deleted (post-Phase 8) and this becomes the last remaining reason not to. Not assigned to a
+  phase number yet because neither trigger has happened.
 
 ---
 
