@@ -1445,16 +1445,15 @@ decision 12; see that decision for why.)
       Database, real `narrateQueryResult()` OpenRouter call, real persisted `chat_messages`
       row. But the narrated answer was *"No matching data was found for client CL0001..."* —
       despite the REST endpoint confirming, minutes earlier on this exact same company and
-      Postgres, that `CL0001` genuinely exists and is reachable. This is not a guard rejection
-      (that produces a different, distinct message) and not an infrastructure failure — the
-      query executed and returned zero rows for some reason not investigated further here (the
-      generated SQL text itself wasn't captured/logged by this test). **Deliberately not
-      chased down further in this phase**: Phase 9's scope was proving the deployed
-      infrastructure path works end-to-end, which it does; a content-accuracy question like
-      this is exactly what the `AI_CHAT_ENGINE` cutover bar's 30-real-question requirement
-      exists to surface and catch, not something to debug live under a self-imposed toggle-window
-      time pressure. Noted here plainly so it isn't lost, not smoothed over as an unqualified
-      success.
+      Postgres, that `CL0001` genuinely exists and is reachable.
+
+      **Root-caused and fixed the same day, before any real counting toward the cutover bar
+      started** — see the `AI_CHAT_ENGINE` cutover entry below for the full diagnostic record
+      and fix. Not a guard rejection, not an infrastructure failure, and not a SQL-generation
+      or training-data problem as first suspected: `narrateQueryResult()`'s table renderer
+      turned a genuine `null` cell into an empty string, making a real 1-row result
+      indistinguishable from zero rows at the text level. Fixed in
+      `server/src/agent/narrateQueryResult.ts`.
 
 ---
 
@@ -1687,6 +1686,26 @@ moment it's actually being worked, never be closed by just deleting the bullet._
   still has the old, pre-migration `FINANCIAL_TABLES` (Postgres table names), so its chat agent
   genuinely still works there; this bug is specific to `migration`'s repointed config. See the
   merge-to-`main` backlog item below for the precondition this discovery adds.
+
+  **Second bug found and fixed the same day, before any real counting started** — root-caused
+  per the user's explicit instruction (diagnose now rather than discover it per-question mid-count,
+  since a systematic bug would void the count anyway under the reset rule above). Two consecutive
+  real questions ("credit limit for CL0001"/"CL0002") both incorrectly answered "no matching data
+  was found" for clients confirmed to exist. Added diagnostic logging
+  (`server/src/agent/vannaAgent.ts` logs `question`/`generatedSql`/`executedSql`/`rowCount` on
+  every call now, not just failures; `executeGuardedQuery()` gained an `executedSql` return
+  field to make this possible) and reproduced both on the deployed instance. **Logs proved this
+  was never a SQL-generation, guard, or training-data problem** — both questions correctly
+  generated `SELECT [LimiteCred] FROM [dbo].[Clientes] WHERE [Cliente] = 'CL0001'`-shaped SQL,
+  executed successfully, and returned `rowCount=1` for both. The actual bug: `LimiteCred` is
+  genuinely `null` for these real clients, and `narrateQueryResult.ts`'s table renderer
+  (`formatValue()`) rendered `null` as an empty string — so a real 1-row result with a null
+  column rendered as a header, a separator, and a blank line, indistinguishable from zero rows
+  at the text level the narration model actually sees. Fixed: `null`/`undefined` now render as
+  an explicit `"NULL"` marker. Verified fixed on the real deployed instance: both questions now
+  correctly answer that the client exists with no credit limit set, not "no matching data."
+  Regression test added (`vannaAgent.test.ts`) asserting a 1-null-row result renders
+  distinguishably from a genuine zero-row result — 38/38 tests pass.
 
   **Session log** (append as sessions happen; empty until the user starts):
   _None yet._
