@@ -1561,6 +1561,30 @@ moment it's actually being worked, never be closed by just deleting the bullet._
   **Session log** (append as sessions happen; empty until the user starts):
   _None yet._
 
+- **Merge `migration/railway-vanna` into `main` — cut over the real production environment.**
+  Added 2026-09-04, during Phase 9 scoping. Confirmed explicitly: Phase 9 ("Deploy") is scoped
+  to the `migration` Railway environment only (Static Outbound IPs, Azure SQL firewall
+  restriction, deploying `vanna-service` there) — same pattern every phase so far has followed
+  (all work stays off `main`/production). Actually merging this branch and cutting over
+  Railway's `production` environment (currently still deploying the old, pre-migration app —
+  confirmed live at deploy time: Postgres-only chat agent, no per-tenant SQL Server routing,
+  no Vanna) is **not** part of Phase 9 — it's a separate, later, more consequential decision,
+  same treatment the `AI_CHAT_ENGINE` cutover above already got. **Owner: the user** — an
+  outward-facing, hard-to-reverse production cutover affecting real traffic, not something to
+  do on inferred approval.
+
+  **Explicit dependency, stated by the user, not inferred**: **must not happen before the
+  `AI_CHAT_ENGINE` cutover bar above is met** — merging first would put real production users
+  on `sqlAgent.ts` by default regardless (`AI_CHAT_ENGINE` defaults to `"sql-agent"`), which
+  defeats the point of doing the cutover work first.
+
+  **Second dependency, inferred not stated — flag for the user to confirm or reject**: this
+  probably also shouldn't happen before Phase 9 itself is actually complete (Static Outbound
+  IPs enabled, Azure SQL firewall restricted to those IPs) — merging to production before that
+  would put real traffic behind the demo's current wide-open Azure firewall rule. Recorded here
+  as a reasonable assumption, not a confirmed decision the way the `AI_CHAT_ENGINE` dependency
+  above is.
+
 ---
 
 ## Open questions
