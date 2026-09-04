@@ -1524,6 +1524,43 @@ moment it's actually being worked, never be closed by just deleting the bullet._
   deleted (post-Phase 8) and this becomes the last remaining reason not to. Not assigned to a
   phase number yet because neither trigger has happened.
 
+- **`AI_CHAT_ENGINE` cutover — flip the default to `"vanna"`, then delete `sqlAgent.ts`/
+  `financialQueryTools.ts`.** Added 2026-09-04, right after Phase 8's acceptance test — that
+  test proved the Vanna path *works*, not that it's ready to be what every real user talks to
+  by default. Decision 1's whole trade (losing the old agent's "model can't see raw SQL"
+  guarantee for open-ended multi-table support) isn't actually realized until this cutover
+  happens — until then it's proven in a controlled test, not in production. **Owner: the user**
+  — this needs real usage through the actual browser UI, not something a script can stand in
+  for (every acceptance test in this migration has meant a real person asking a real question,
+  not a scripted proxy for one).
+
+  **Definition of done — objective, not a vibe check:**
+  - At least **30 real questions**, asked by a real person through the actual browser UI (not
+    curl/scripted) with `AI_CHAT_ENGINE=vanna` set, logged below as they happen (question asked,
+    pass/fail, any issue) — not summarized after the fact as "it worked."
+  - Spread across **at least 3 separate sessions** (not one sitting) — a single burst can't
+    surface time-dependent failure modes this app already knows about (Azure SQL Database's
+    serverless cold-start, transient OpenRouter/vanna-service hiccups).
+  - Covering **both companies** (Aurora, FlameCon) and **at least 4 of the 7** Financial Data
+    tables.
+  - **At least 2 questions in Portuguese** — Phase 7 trained bilingually but nothing has
+    actually exercised the Portuguese path in real usage yet.
+  - **At least 1 multi-table/JOIN question** — decision 1's actual stated reason for choosing
+    Vanna over the old single-table-only agent; the bar shouldn't pass without exercising it.
+  - **Zero, across all of the above**, of: (a) an unhandled/500-class failure surfaced to the
+    user; (b) a narrated answer verified factually wrong against the real underlying data;
+    (c) a guard rejection (`GuardViolationError`) on a question judged answerable within the
+    curated schema — a false-positive rejection, not the guard correctly blocking something
+    genuinely out of scope, which is the guard working as intended and doesn't count against
+    this bar.
+  - Any confirmed, reproducible bug found along the way gets fixed, and **the 30-question count
+    restarts from after the fix** — it does not accumulate across a version with a known,
+    unpatched defect. A one-off transient infra hiccup that succeeds on retry (e.g. an Azure
+    cold-start timeout, already a documented, accepted characteristic) does not reset the count.
+
+  **Session log** (append as sessions happen; empty until the user starts):
+  _None yet._
+
 ---
 
 ## Open questions
