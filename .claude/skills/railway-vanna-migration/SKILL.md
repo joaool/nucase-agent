@@ -1306,19 +1306,22 @@ decision 12; see that decision for why.)
       mechanism is fully explained: any bare Railway CLI command on this machine rides on
       whatever is currently linked, and that can change for reasons unrelated to this
       migration (checking on the live app, other project work) with no warning.
-    - **Real, concrete side effect — not just a close call**: a `vanna` schema and `vanna_app`
-      role existed on **production**'s Postgres, however briefly. Nothing inside `schema vanna`
-      was ever created (the failure happened before anything used it), and the tables it never
-      got to `REVOKE` from never existed on production to begin with — but `vanna_app` did
-      briefly exist as a live login on the production database with default schema-`public`
-      privileges never explicitly revoked (the `REVOKE ALL ON SCHEMA public` step is exactly
-      the one that never ran). **Cleaned up for real, by the user, verified structurally, not
-      just asserted**: `REVOKE ALL ON SCHEMA public FROM vanna_app` → `DROP OWNED BY vanna_app`
-      → `DROP SCHEMA IF EXISTS vanna` (deliberately not `CASCADE` — would have failed loudly
+    - **Real, concrete side effect — not just a close call, but no production table was ever
+      exposed or touched.** A `vanna` schema and `vanna_app` role existed on **production**'s
+      Postgres, however briefly — that part is real, not hypothetical. But the schema was
+      empty and admin-owned (created by the connecting admin login, `CREATE ROLE` alone confers
+      no table-level access, and the failed run never reached the `REVOKE`/grant statements
+      that would have touched any real table) — `vanna_app` never held `SELECT`/`INSERT`/
+      `UPDATE`/`DELETE` on any actual production table at any point, including
+      `tenant_connections`/`users`/`companies`/etc., which don't even exist there. The blast
+      radius was a stray, empty, privilege-less schema and an unused login — not a data
+      exposure. **Cleaned up for real, by the user, verified structurally, not just
+      asserted**: `REVOKE ALL ON SCHEMA public FROM vanna_app` → `DROP OWNED BY vanna_app` →
+      `DROP SCHEMA IF EXISTS vanna` (deliberately not `CASCADE` — would have failed loudly
       instead of silently deleting something unexpected, had anything been there) →
-      `DROP ROLE IF EXISTS vanna_app`. Verified after: `vanna_app role still exists: false`,
-      `vanna schema still exists: false`, both queried directly against production, not
-      inferred from the drop commands not erroring.
+      `DROP ROLE IF EXISTS vanna_app`. Verified after **by re-querying, not by trusting the
+      `DROP` commands not erroring**: `vanna_app role still exists: false`, `vanna schema
+      still exists: false`, both confirmed directly against production.
     - **Process fix — added as a guardrail below, not left as a one-off lesson**: every Railway
       CLI command touching this migration must pass `--environment migration` explicitly from
       now on, never rely on the ambient linked default. An explicit per-command flag survives a
